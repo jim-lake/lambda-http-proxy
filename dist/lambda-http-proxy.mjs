@@ -3,6 +3,7 @@ import https from 'node:https';
 import { Buffer } from 'node:buffer';
 
 const PRELUDE_DELIMITER = Buffer.alloc(8);
+const EMPTY_FLUSH = Buffer.alloc(0);
 const HOP_BY_HOP = /* @__PURE__ */ new Set([
   "connection",
   "keep-alive",
@@ -95,6 +96,27 @@ function filterResponseHeaders(headers) {
   }
   return out;
 }
+const REMAP_PREFIX = "x-lambda-proxy-remap-";
+const EDGE_MANGLED_HEADERS = /* @__PURE__ */ new Set([
+  "content-length",
+  "content-type",
+  "content-encoding",
+  "content-range",
+  "content-disposition",
+  "content-language",
+  "www-authenticate"
+]);
+function smuggleMangledHeaders(headers) {
+  const out = {
+    ...headers
+  };
+  for (const [name, value] of Object.entries(headers)) {
+    if (value !== void 0 && EDGE_MANGLED_HEADERS.has(name.toLowerCase())) {
+      out[`${REMAP_PREFIX}${name.toLowerCase()}`] = value;
+    }
+  }
+  return out;
+}
 function applyResponseMetadata(responseStream, meta) {
   if (globalThis.awslambda?.HttpResponseStream.from) {
     return globalThis.awslambda.HttpResponseStream.from(responseStream, meta);
@@ -126,13 +148,25 @@ async function forwardAndStream(args, responseStream) {
         servername: hostname
       },
       (upstream) => {
-        const meta = {
-          statusCode: upstream.statusCode ?? 502,
-          headers: filterResponseHeaders(upstream.headers)
-        };
-        const stream = applyResponseMetadata(responseStream, meta);
+        const statusCode = upstream.statusCode ?? 502;
+        const contentLength = upstream.headers["content-length"];
+        const bodyless = method.toUpperCase() === "HEAD" || statusCode === 204 || statusCode === 304 || contentLength === "0";
+        const headers = smuggleMangledHeaders(
+          filterResponseHeaders(upstream.headers)
+        );
+        const stream = applyResponseMetadata(responseStream, {
+          statusCode,
+          headers
+        });
         upstream.on("error", reject);
         stream.on("error", reject);
+        if (bodyless) {
+          upstream.resume();
+          stream.write(EMPTY_FLUSH);
+          stream.end();
+          resolve();
+          return;
+        }
         upstream.on("end", resolve);
         upstream.pipe(stream);
       }
@@ -195,5 +229,5 @@ const handler = streamify(
   }
 );
 
-export { handler, proxy };
+export { REMAP_PREFIX, handler, proxy };
 //# sourceMappingURL=lambda-http-proxy.mjs.map

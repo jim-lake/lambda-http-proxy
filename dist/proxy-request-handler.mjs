@@ -50,7 +50,7 @@ class ProxyRequestHandler {
           resolve({
             response: new HttpResponse({
               statusCode: proxyRes.statusCode ?? 200,
-              headers: unremapHeaders(flattenHeaders(proxyRes.headers)),
+              headers: reassembleHeaders(flattenHeaders(proxyRes.headers)),
               body: proxyRes
             })
           });
@@ -89,17 +89,24 @@ function flattenHeaders(headers) {
   return out;
 }
 const REMAP_PREFIX = "x-amzn-remapped-";
-function unremapHeaders(headers) {
+const PROXY_REMAP_PREFIX = "x-lambda-proxy-remap-";
+function reassembleHeaders(headers) {
   const out = {};
   for (const [k, v] of Object.entries(headers)) {
     const lower = k.toLowerCase();
-    if (lower.startsWith(REMAP_PREFIX)) {
+    if (lower.startsWith(PROXY_REMAP_PREFIX)) ; else if (lower.startsWith(REMAP_PREFIX)) {
       const canonical = lower.slice(REMAP_PREFIX.length);
-      if (!Object.hasOwn(out, canonical) && !Object.hasOwn(headers, canonical)) {
+      if (!Object.hasOwn(headers, canonical)) {
         out[canonical] = v;
       }
     } else {
       out[k] = v;
+    }
+  }
+  for (const [k, v] of Object.entries(headers)) {
+    const lower = k.toLowerCase();
+    if (lower.startsWith(PROXY_REMAP_PREFIX)) {
+      out[lower.slice(PROXY_REMAP_PREFIX.length)] = v;
     }
   }
   return out;
@@ -118,5 +125,5 @@ async function collectBody(body) {
   return Buffer.concat(chunks);
 }
 
-export { ProxyRequestHandler };
+export { ProxyRequestHandler, reassembleHeaders };
 //# sourceMappingURL=proxy-request-handler.mjs.map

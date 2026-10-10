@@ -40,9 +40,10 @@ interface AwsLambdaGlobal {
 declare global {
     var awslambda: AwsLambdaGlobal | undefined;
 }
+declare const REMAP_PREFIX = "x-lambda-proxy-remap-";
 declare function proxy(event: FunctionUrlEvent, responseStream: ResponseStream): Promise<void>;
 type ProxyFn = (event: FunctionUrlEvent, responseStream: ResponseStream, context: LambdaContext) => Promise<void>;
 declare const handler: ProxyFn;
 
-export { handler, proxy };
+export { REMAP_PREFIX, handler, proxy };
 export type { AwsLambdaGlobal, FunctionUrlEvent, LambdaContext, ResponseMetadata, ResponseStream };

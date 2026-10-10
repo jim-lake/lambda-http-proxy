@@ -1,12 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
+import type { Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { startOrigin } from '../helpers.ts';
 import {
   invokeFunctionUrl,
   collect,
   makeEnvelopeEvent,
+  ProxyFunctionUrlRequestHandler,
 } from '../function-url-runtime.ts';
 
 /*
@@ -140,9 +142,12 @@ test('upstream error status is mirrored (e.g. post-signature NoSuchKey)', async 
 
 test('empty-body response (HEAD) still conveys status and headers', async () => {
   // HEAD responses carry metadata (Content-Length, ETag, …) in headers with an
-  // EMPTY body. The proxy must flush the metadata prelude even though no body
-  // byte is ever written, otherwise the edge builds a response missing those
-  // headers (e.g. HeadObject's Content-Length comes back undefined).
+  // EMPTY body. The streaming edge discards the metadata prelude entirely when
+  // the handler never writes, so the proxy (a) smuggles the headers it knows
+  // the edge mangles under `x-lambda-proxy-remap-*`, and (b) does a ZERO-LENGTH
+  // write to flush the prelude without adding a body byte. `invokeFunctionUrl`
+  // is the RAW edge here, so we observe that wire contract directly; the SDK
+  // requestHandler then reassembles the real headers.
   const { server, port } = await startOrigin(
     (_req: IncomingMessage, res: ServerResponse) => {
       res.writeHead(200, {
@@ -165,10 +170,58 @@ test('empty-body response (HEAD) still conveys status and headers', async () => 
   server.close();
 
   assert.equal(statusCode, 200);
-  // Upstream headers survive even with an empty body.
-  assert.equal(headers['content-length'], '12345');
+  // The mangled headers are smuggled under the proxy's side channel …
+  assert.equal(headers['x-lambda-proxy-remap-content-length'], '12345');
+  assert.equal(
+    headers['x-lambda-proxy-remap-content-type'],
+    'application/octet-stream'
+  );
+  // Headers the edge does NOT mangle pass through under their canonical names.
   assert.equal(headers.etag, '"deadbeef"');
-  assert.equal(headers['content-type'], 'application/octet-stream');
-  // Body is genuinely empty — byte-for-byte the upstream (HEAD) body.
+  // The body is genuinely empty — a zero-length write flushed the prelude.
+  assert.equal(received.length, 0);
+});
+
+test('SDK requestHandler reassembles the real HEAD headers and empties the body', async () => {
+  // The companion to the test above: through the full SDK requestHandler, the
+  // smuggled headers are restored to their canonical names, so the caller sees
+  // the response exactly as the upstream sent it, with an empty body.
+  const { server, port } = await startOrigin(
+    (_req: IncomingMessage, res: ServerResponse) => {
+      res.writeHead(200, {
+        'content-length': '12345',
+        etag: '"deadbeef"',
+        'content-type': 'application/octet-stream',
+      });
+      res.end();
+    }
+  );
+
+  const handler = new ProxyFunctionUrlRequestHandler();
+  const { response } = (await handler.handle({
+    method: 'HEAD',
+    path: '/some/object',
+    headers: { host: `127.0.0.1:${port}` },
+  })) as {
+    response: {
+      statusCode: number;
+      headers: Record<string, string>;
+      body: Readable;
+    };
+  };
+  const received = await collect(response.body);
+  server.close();
+
+  assert.equal(response.statusCode, 200);
+  // Canonical names restored — HeadObject's ContentLength would populate.
+  assert.equal(response.headers['content-length'], '12345');
+  assert.equal(response.headers['content-type'], 'application/octet-stream');
+  assert.equal(response.headers.etag, '"deadbeef"');
+  // No side-channel/alias headers leak through.
+  assert.equal(
+    response.headers['x-lambda-proxy-remap-content-length'],
+    undefined
+  );
+  // Body is genuinely empty.
   assert.equal(received.length, 0);
 });

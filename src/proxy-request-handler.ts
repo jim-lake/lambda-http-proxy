@@ -99,7 +99,7 @@ export class ProxyRequestHandler {
           resolve({
             response: new HttpResponse({
               statusCode: proxyRes.statusCode ?? 200,
-              headers: unremapHeaders(flattenHeaders(proxyRes.headers)),
+              headers: reassembleHeaders(flattenHeaders(proxyRes.headers)),
               body: proxyRes,
             }),
           });
@@ -156,24 +156,51 @@ function flattenHeaders(headers: IncomingHttpHeaders): Record<string, string> {
  */
 const REMAP_PREFIX = 'x-amzn-remapped-';
 
-function unremapHeaders(
+/*
+ * The Lambda proxy's own side channel. For every response header the Function
+ * URL streaming edge MANGLES (drops `content-length`, overrides `content-type`,
+ * …), the proxy emits a verbatim copy named `x-lambda-proxy-remap-<header>`
+ * that the edge forwards untouched. These carry the TRUE upstream values, so
+ * they take precedence over anything else when reassembling the response.
+ */
+const PROXY_REMAP_PREFIX = 'x-lambda-proxy-remap-';
+
+/*
+ * Reassemble the true upstream response headers from what reached the caller.
+ * Precedence, highest first:
+ *   1. `x-lambda-proxy-remap-<h>`  — the proxy's verbatim upstream value.
+ *   2. the canonical header          — if the edge left it alone.
+ *   3. `x-amzn-remapped-<h>`        — the edge's own remap (fallback).
+ * All helper/alias headers are dropped from the result.
+ */
+export function reassembleHeaders(
   headers: Record<string, string>
 ): Record<string, string> {
   const out: Record<string, string> = {};
+
+  // Pass 1: carry through non-alias headers and apply the edge's own remap.
   for (const [k, v] of Object.entries(headers)) {
     const lower = k.toLowerCase();
-    if (lower.startsWith(REMAP_PREFIX)) {
+    if (lower.startsWith(PROXY_REMAP_PREFIX)) {
+      // handled in pass 2 (authoritative)
+    } else if (lower.startsWith(REMAP_PREFIX)) {
       const canonical = lower.slice(REMAP_PREFIX.length);
-      if (
-        !Object.hasOwn(out, canonical) &&
-        !Object.hasOwn(headers, canonical)
-      ) {
+      if (!Object.hasOwn(headers, canonical)) {
         out[canonical] = v;
       }
     } else {
       out[k] = v;
     }
   }
+
+  // Pass 2: the proxy's side channel wins — it holds the real upstream value.
+  for (const [k, v] of Object.entries(headers)) {
+    const lower = k.toLowerCase();
+    if (lower.startsWith(PROXY_REMAP_PREFIX)) {
+      out[lower.slice(PROXY_REMAP_PREFIX.length)] = v;
+    }
+  }
+
   return out;
 }
 

@@ -54,6 +54,15 @@ export interface ResponseStream extends Writable {
  */
 const PRELUDE_DELIMITER = Buffer.alloc(8);
 
+/*
+ * A zero-length buffer written to body-less responses (HEAD / 204 / 304 /
+ * content-length: 0). The Function URL streaming edge drops the entire header
+ * prelude unless the handler writes to the stream; a zero-length write flushes
+ * the prelude WITHOUT adding a body byte, so the headers survive and the body
+ * stays genuinely empty. No sentinel byte, no client-side stripping needed.
+ */
+const EMPTY_FLUSH = Buffer.alloc(0);
+
 export interface AwsLambdaGlobal {
   streamifyResponse(
     handler: (
@@ -229,6 +238,52 @@ function filterResponseHeaders(
   return out;
 }
 
+/*
+ * The AWS Lambda Function URL edge, in RESPONSE_STREAM mode, MANGLES a set of
+ * reserved response headers on the way to the caller: it drops `content-length`
+ * (the body is re-framed as chunked), overrides `content-type` to
+ * `application/octet-stream`, and remaps a security/transport-reserved set
+ * (`server`, `date`, `www-authenticate`, …) to `x-amzn-remapped-*`. The upshot
+ * is the caller cannot see the real values the upstream service sent.
+ *
+ * We cannot stop the edge from doing this, but we CAN smuggle the real values
+ * past it: for each header the edge mangles, emit a side-channel copy named
+ * `x-lambda-proxy-remap-<header>`. The edge forwards that custom-prefixed header
+ * through verbatim (confirmed against the live edge), and the published
+ * `ProxyRequestHandler` reassembles the real header from it. Headers the edge
+ * does NOT touch (etag, last-modified, cache-control, accept-ranges, x-amz-*, …)
+ * are left exactly as-is.
+ */
+export const REMAP_PREFIX = 'x-lambda-proxy-remap-';
+
+/*
+ * The headers the Function URL streaming edge is known to mangle (drop,
+ * override, or remap). These — and only these — are copied to the side channel.
+ */
+const EDGE_MANGLED_HEADERS = new Set<string>([
+  'content-length',
+  'content-type',
+  'content-encoding',
+  'content-range',
+  'content-disposition',
+  'content-language',
+  'www-authenticate',
+]);
+
+function smuggleMangledHeaders(
+  headers: Record<string, string | string[] | number | undefined>
+): Record<string, string | string[] | number | undefined> {
+  const out: Record<string, string | string[] | number | undefined> = {
+    ...headers,
+  };
+  for (const [name, value] of Object.entries(headers)) {
+    if (value !== undefined && EDGE_MANGLED_HEADERS.has(name.toLowerCase())) {
+      out[`${REMAP_PREFIX}${name.toLowerCase()}`] = value;
+    }
+  }
+  return out;
+}
+
 function applyResponseMetadata(
   responseStream: ResponseStream,
   meta: ResponseMetadata
@@ -290,14 +345,48 @@ async function forwardAndStream(
         servername: hostname,
       },
       (upstream) => {
-        const meta: ResponseMetadata = {
-          statusCode: upstream.statusCode ?? 502,
-          headers: filterResponseHeaders(upstream.headers),
-        };
-        const stream = applyResponseMetadata(responseStream, meta);
+        const statusCode = upstream.statusCode ?? 502;
+        /*
+         * A response with no entity body: a HEAD request, a 204/304 status, or
+         * an explicit `content-length: 0`. We must NOT proxy an upstream body
+         * for these — there is none.
+         *
+         * The streaming edge DROPS the entire response-streaming metadata
+         * prelude (every header) unless the handler writes to the stream — a
+         * handler that only calls end() with no write arrives at the caller
+         * with none of its headers (verified against the live edge). Writing a
+         * ZERO-LENGTH buffer flushes the prelude WITHOUT adding a body byte, so
+         * the headers survive and the body stays genuinely empty. The upstream
+         * body is never read or forwarded.
+         */
+        const contentLength = upstream.headers['content-length'];
+        const bodyless =
+          method.toUpperCase() === 'HEAD' ||
+          statusCode === 204 ||
+          statusCode === 304 ||
+          contentLength === '0';
+
+        const headers = smuggleMangledHeaders(
+          filterResponseHeaders(upstream.headers)
+        );
+
+        const stream = applyResponseMetadata(responseStream, {
+          statusCode,
+          headers,
+        });
 
         upstream.on('error', reject);
         stream.on('error', reject);
+
+        if (bodyless) {
+          upstream.resume(); // drain the socket; never proxy the (empty) body
+          stream.write(EMPTY_FLUSH); // flush the prelude with no body byte
+          stream.end();
+          resolve();
+          return;
+        }
+
+        // Normal response: pipe the body straight through (never buffered).
         upstream.on('end', resolve);
         upstream.pipe(stream);
       }

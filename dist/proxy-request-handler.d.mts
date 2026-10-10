@@ -39,6 +39,7 @@ declare class ProxyRequestHandler {
         response: HttpResponse;
     }>;
 }
+declare function reassembleHeaders(headers: Record<string, string>): Record<string, string>;
 
-export { ProxyRequestHandler };
+export { ProxyRequestHandler, reassembleHeaders };
 export type { ProxyRequestHandlerOptions };

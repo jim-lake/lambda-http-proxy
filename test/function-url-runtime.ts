@@ -35,6 +35,7 @@ import type {
   ResponseMetadata,
   ResponseStream,
 } from '../dist/lambda-http-proxy.mjs';
+import { reassembleHeaders } from '../dist/proxy-request-handler.mjs';
 
 type ProxyHandler = (
   event: FunctionUrlEvent,
@@ -233,35 +234,6 @@ function flattenHeaders(
   return out;
 }
 
-/*
- * Undo the AWS Lambda Function URL edge's response-header remapping. In
- * RESPONSE_STREAM mode the edge renames a set of reserved response headers by
- * prefixing them with `x-amzn-remapped-` (e.g. upstream `Content-Length`
- * arrives as `x-amzn-remapped-content-length`). Restore the canonical names so
- * the response matches the upstream exactly (so, e.g., HeadObject's
- * ContentLength is populated). An existing canonical header is never
- * overwritten; the remapped alias is dropped once restored.
- */
-const REMAP_PREFIX = 'x-amzn-remapped-';
-
-function unremapHeaders(
-  headers: Record<string, string>
-): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(headers)) {
-    const lower = k.toLowerCase();
-    if (lower.startsWith(REMAP_PREFIX)) {
-      const canonical = lower.slice(REMAP_PREFIX.length);
-      if (out[canonical] === undefined && headers[canonical] === undefined) {
-        out[canonical] = v;
-      }
-      continue;
-    }
-    out[k] = v;
-  }
-  return out;
-}
-
 /* Convenience: collect a Readable to a Buffer. */
 export async function collect(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -349,7 +321,17 @@ export class ProxyFunctionUrlRequestHandler {
       handler: this.handler,
     });
 
-    return { response: new HttpResponse({ statusCode, headers, body }) };
+    // Reassemble the true upstream headers from the proxy's side channel —
+    // exactly as the published ProxyRequestHandler does. The body is already
+    // genuinely empty for body-less responses (the proxy flushes the prelude
+    // with a zero-length write, not a sentinel byte).
+    return {
+      response: new HttpResponse({
+        statusCode,
+        headers: reassembleHeaders(headers),
+        body,
+      }),
+    };
   }
 }
 
@@ -505,7 +487,7 @@ export class ProxyFunctionUrlHttpsRequestHandler {
           resolve({
             response: new HttpResponse({
               statusCode: res.statusCode ?? 200,
-              headers: unremapHeaders(flattenHeaders(res.headers)),
+              headers: reassembleHeaders(flattenHeaders(res.headers)),
               body: res,
             }),
           });
