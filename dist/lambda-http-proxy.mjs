@@ -2,7 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { Buffer } from 'node:buffer';
 
-const BUILD_VERSION = "0.0.10";
+const BUILD_VERSION = "0.0.11";
 const PRELUDE_DELIMITER = Buffer.alloc(8);
 const EMPTY_FLUSH = Buffer.alloc(0);
 const HOP_BY_HOP = /* @__PURE__ */ new Set([
