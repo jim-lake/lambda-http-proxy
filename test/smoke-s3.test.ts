@@ -23,43 +23,17 @@ import { makeProxyRequestHandler } from './proxy-target.ts';
  * bucket lives and we talk to it there. No writes, no setup. Objects are read
  * up to MAX_READ_BYTES (10 MB).
  *
- * This is a straight-line chain with HARD assertions at every step. The primary
- * invariant is SigV4 survival across the proxy hop (a SignatureDoesNotMatch is
- * called out explicitly), but every step must also actually succeed: no
- * readable bucket, no readable object, a failing HeadObject, or an unreadable
- * body each FAIL the test. There are no skips and no conditional early returns —
- * the result is always a hard pass or fail.
+ * This is a straight-line chain with HARD assertions at every step. Every call
+ * must return a well-formed, successful response. There is NO error tolerance:
+ * any thrown error — SignatureDoesNotMatch, a protocol/parse error from a
+ * mangled body, AccessDenied, NoSuchKey, anything — propagates and fails the
+ * test. No skips, no conditional early returns, no try/catch success paths. The
+ * result is always a hard pass or fail.
  */
 const MAX_READ_BYTES = 10 * 1024 * 1024; // 10 MB cap
 
 function s3For(region: string): S3Client {
   return new S3Client({ region, requestHandler: makeProxyRequestHandler() });
-}
-
-interface AwsError {
-  name?: string;
-  message?: string;
-}
-
-/*
- * Run an S3 call. If S3 rejects it with SignatureDoesNotMatch, the proxy
- * mangled the signed request — fail loudly. Any other error is rethrown as-is
- * so the straight-line chain fails on it too (an unreadable step is a failure,
- * never a skip).
- */
-async function send<T>(call: () => Promise<T>): Promise<T> {
-  try {
-    return await call();
-  } catch (err) {
-    const e = err as AwsError;
-    const name = e?.name ?? 'Error';
-    const msg = e?.message ?? '';
-    assert.ok(
-      !`${name} ${msg}`.includes('SignatureDoesNotMatch'),
-      `SignatureDoesNotMatch — proxy mangled the signed request: ${name} ${msg}`
-    );
-    throw err;
-  }
 }
 
 /* Read a GetObject body stream, enforcing the 10 MB cap without buffering it all. */
@@ -86,8 +60,13 @@ test('S3 read-only chain survives the proxy hop (real AWS)', async () => {
   // guess about where the data lives.
   const global = s3For('us-east-1');
 
-  // 1. ListBuckets — there must be at least one bucket to drive the chain.
-  const listed = await send(() => global.send(new ListBucketsCommand({})));
+  // 1. ListBuckets — must return 200 and at least one bucket to drive the chain.
+  const listed = await global.send(new ListBucketsCommand({}));
+  assert.equal(
+    listed.$metadata?.httpStatusCode,
+    200,
+    'expected HTTP 200 from ListBuckets'
+  );
   const names = (listed.Buckets ?? [])
     .map((b) => b.Name)
     .filter((n): n is string => typeof n === 'string');
@@ -95,15 +74,15 @@ test('S3 read-only chain survives the proxy hop (real AWS)', async () => {
 
   // 2. GetBucketLocation — locate the first bucket and bind a regional client.
   const bucket = names[0];
-  const loc = await send(() =>
-    global.send(new GetBucketLocationCommand({ Bucket: bucket }))
+  const loc = await global.send(
+    new GetBucketLocationCommand({ Bucket: bucket })
   );
   const region = loc.LocationConstraint ?? 'us-east-1';
   const s3 = s3For(region);
 
   // 3. ListObjectsV2 — there must be a non-empty object to read.
-  const objects = await send(() =>
-    s3.send(new ListObjectsV2Command({ Bucket: bucket, MaxKeys: 50 }))
+  const objects = await s3.send(
+    new ListObjectsV2Command({ Bucket: bucket, MaxKeys: 50 })
   );
   const obj = (objects.Contents ?? []).find((o) => (o.Size ?? 0) > 0);
   assert.ok(obj?.Key, `expected a non-empty object in bucket ${bucket}`);
@@ -111,8 +90,8 @@ test('S3 read-only chain survives the proxy hop (real AWS)', async () => {
   const size = obj.Size ?? 0;
 
   // 4. HeadObject — metadata must come back with a numeric ContentLength.
-  const head = await send(() =>
-    s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }))
+  const head = await s3.send(
+    new HeadObjectCommand({ Bucket: bucket, Key: key })
   );
   assert.equal(
     typeof head.ContentLength,
@@ -124,8 +103,8 @@ test('S3 read-only chain survives the proxy hop (real AWS)', async () => {
   //    the object is larger so we never pull more than the cap off the wire.
   const range =
     size > MAX_READ_BYTES ? `bytes=0-${MAX_READ_BYTES - 1}` : undefined;
-  const got = await send(() =>
-    s3.send(new GetObjectCommand({ Bucket: bucket, Key: key, Range: range }))
+  const got = await s3.send(
+    new GetObjectCommand({ Bucket: bucket, Key: key, Range: range })
   );
   assert.ok(got.Body, 'expected a response body from GetObject');
   const read = await readCapped(
