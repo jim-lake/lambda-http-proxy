@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Deploy lambda-http-proxy with the AWS CLI only (no SAM required).
+# Deploy lambda-http-proxy with the AWS CLI only.
 #
 # RESPONSE_STREAM is hard-coded as the ONLY invoke mode. The proxy streams
 # every byte of the upstream response and never buffers, so a buffered Function

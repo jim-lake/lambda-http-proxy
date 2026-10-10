@@ -42,6 +42,15 @@ streams the response straight back through the SDK.
    breaks verification. There is a regression test for this.
 5. `forwardAndStream` opens an HTTPS request to the signed `host` and
    `upstream.pipe(responseStream)` — the response is never buffered.
+6. **Output contract.** `applyResponseMetadata` conveys the upstream status +
+   headers via `awslambda.HttpResponseStream.from` (real runtime) — which emits
+   a JSON metadata prelude + eight NUL bytes + body. On a deployed Function URL
+   the AWS edge consumes that prelude and produces the real HTTP status +
+   headers, so the body the caller receives is byte-for-byte the upstream body.
+   The output is **indistinguishable from calling the upstream directly**. The
+   non-runtime fallback writes the identical wire format (prelude + 8 NUL +
+   body) so a plain-node harness sees exactly what a deployed Function URL
+   emits.
 
 The handler is wrapped with `awslambda.streamifyResponse` when the real runtime
 provides it. `streamify` and `applyResponseMetadata` guard on the actual
@@ -54,7 +63,7 @@ because importing an AWS SDK client sets `globalThis.awslambda = {}` (empty).
 - **TypeScript is only a type-checker** — never an emitter. `tsc --noEmit` only.
 - **esbuild** (via `rollup-plugin-esbuild`) transpiles; **rollup-plugin-dts**
   emits types. Two-pass build in `rollup.config.mjs`.
-- **tsx** runs everything executable (tests, smoke tests, event generator).
+- **tsx** runs everything executable (the tests).
 - The AWS SDK (`@aws-sdk/*`, `@smithy/*`) is **external** in the bundle — the
   managed runtime ships it. Pinned version is recorded in
   `package.json#lambdaRuntime.providedSdkVersion` (currently `3.1105.0`); dev
@@ -65,87 +74,85 @@ npm run ts:check     # tsc --noEmit (type-check only)
 npm run lint         # eslint src --fix  (strict; src only, never dist)
 npm run pretty       # prettier --write across the repo
 npm run build        # ts:check + rollup (esbuild bundle + dts) -> dist/
-npm test             # build, then unit tests
-npm run test:only    # unit tests without rebuilding
+npm test             # build, then run ALL tests (incl. real AWS)
+npm run test:only    # just the tests, no rebuild
 ```
 
 Pinned to resolve peer ranges: `typescript@6.0.3` (fits typescript-eslint's
 `<6.1.0`), `eslint@9`. Keep `src/**/*.ts` lint-clean.
 
-## Tests
+## The gate (run EVERY time; all three must be green)
 
-Two layers. Keep real test files as `test/**/*.test.mjs` — the runner glob is
-scoped to that so non-test `.mjs` in `test/` (smoke tests, helpers) are not
-swept in and left hanging.
-
-### 1. Unit tests — `test/proxy.test.mjs` (no AWS)
-
-Exercise `proxy()` directly against throwaway local http origins. No Lambda
-runtime involved (the non-runtime fallback annotates the response stream).
-Cover: header preservation, Host preservation, body integrity, incremental
-streaming, the `x-amzn-bedrock-*` regression, and envelope path/headers/body.
+Three separate commands, all green at the end of every change:
 
 ```bash
-npm run test:only
+npm run ts:check     # tsc --noEmit
+npm run lint         # eslint src --fix (strict, src only)
+npm test             # build + tsx --test "test/**/*.test.mjs" (incl. real AWS)
 ```
 
-### 2. Real-runtime tests via SAM (needs Docker + AWS creds)
+`npm test` runs the artifact bundle then every test file, **including the
+real-AWS S3 and Bedrock end-to-end tests**. The box always has valid AWS
+credentials; **nothing needs Docker, SAM, RIE, or LocalStack**. Do not add skips
+or gating for the real-AWS tests. If any of the three commands is not green, the
+change is not done.
 
-The function runs in AWS's **genuine `nodejs24.x` runtime image** — no homebrew
-shim. SAM CLI lives in a venv at `~/.sam-venv`, symlinked to `~/.local/bin/sam`
-(ensure it is on `PATH`).
+## Tests
 
-- **One-shot invoke** against the real runtime:
+Three layers, all under `npm test`. Keep real test files as `test/**/*.test.mjs`
+— the runner glob is scoped to that so non-test `.mjs` in `test/` (the Function
+URL runtime helper) is not swept in and left hanging.
 
-  ```bash
-  npm run sam:invoke        # builds, signs a real S3 event, sam local invoke
-  ```
+### 1. Unit tests — `test/proxy.test.mjs` (no network)
 
-- **Smoke tests** (real SDK client -> `requestHandler` -> proxy in real runtime
-  -> live AWS). `scripts/run-smoke.sh` starts `sam local start-lambda`, waits,
-  runs the test, tears SAM down.
+Exercise `proxy()` directly against throwaway local http origins. No Lambda
+runtime involved (the non-runtime fallback emits the response-streaming wire
+format; the test strips the prelude to recover the raw upstream body). Cover:
+header preservation, Host preservation, body integrity, incremental streaming,
+the `x-amzn-bedrock-*` regression, and envelope path/headers/body.
 
-  ```bash
-  npm run smoke:s3          # ListBuckets (and GetObject with args)
-  npm run smoke:bedrock     # ListFoundationModels + streaming invoke
-  ```
+### 2. Output-contract tests — `test/function-url.test.mjs` (no network)
 
-A `SignatureDoesNotMatch` means the proxy mangled the request. A valid parse —
-or a post-verification error like `AccessDenied`/`NoSuchKey`/`ValidationException`
-— means signing survived.
+Drive the proxy through `test/function-url-runtime.mjs`, a **plain-node**
+emulation of a Function URL in `RESPONSE_STREAM` mode. It installs a faithful
+`globalThis.awslambda` shim (`streamifyResponse` + `HttpResponseStream.from`
+writing the JSON prelude + eight NUL bytes + body), then acts as the AWS edge:
+strips the prelude and returns `{ statusCode, headers, body }` where `body` is a
+Readable. Assert the output is **indistinguishable from the upstream**: status,
+headers, binary body integrity, and incremental delivery. This is the expected
+use case (invoke the Function URL with response streaming; pipe the raw output
+straight downstream).
 
-## Local streaming limitation (important)
+### 3. Real-AWS end-to-end tests — `test/smoke-{s3,bedrock}.test.mjs`
 
-**No local emulator — SAM, RIE, or LocalStack — implements
-`InvokeWithResponseStream`.** They all buffer the response (LocalStack's docs
-state response streaming is unsupported). So:
+A real SDK client signs the request; `ProxyFunctionUrlRequestHandler` (exported
+from `test/function-url-runtime.mjs`) wraps it in the proxy envelope and runs it
+through the same plain-node Function URL emulation, which forwards it verbatim
+to **real AWS over HTTPS** and streams the raw response back. No Docker, no SAM
+— just the ambient credentials on the box.
 
-- Local smoke tests use **direct `Invoke`** via `SamLambdaRequestHandler`
-  (`test/sam-lambda-handler.mjs`), which parses the buffered response-streaming
-  payload (JSON metadata prelude + eight NUL bytes + body).
-- S3 and Bedrock **control-plane** calls pass locally.
-- Bedrock **streaming** (`InvokeModelWithResponseStream`) returns a binary
-  `application/vnd.amazon.eventstream` body that the buffered invoke cannot
-  carry intact. The smoke test treats this as a **known SKIP**, not a failure.
-- **True incremental streaming is only validated against a real deployed
-  Function URL** (`InvokeMode: RESPONSE_STREAM`). When extending streaming
-  tests, target a deployed function, not a local emulator.
+- `smoke-s3.test.mjs`: ListBuckets + GetObject.
+- `smoke-bedrock.test.mjs`: ListFoundationModels + `InvokeModelWithResponseStream`.
+  Because the body streams back raw, the binary
+  `application/vnd.amazon.eventstream` response is decoded by the SDK intact —
+  this validates true streaming with no buffering emulator in the path.
+
+A `SignatureDoesNotMatch` is the only hard failure (the proxy mangled the
+request). A valid response — or a post-verification error like
+`AccessDenied`/`NoSuchKey`/`ValidationException` — means signing survived.
 
 ## Deploy
 
 Streaming is the only supported mode: `InvokeMode: RESPONSE_STREAM`,
-`AuthType: AWS_IAM`, `nodejs24.x`, handler `lambda-http-proxy.handler`,
-`CodeUri: dist/`.
+`AuthType: AWS_IAM`, `nodejs24.x`, handler `lambda-http-proxy.handler`.
 
 ```bash
-sam build && sam deploy --guided            # template.yaml
-# or, without SAM:
 ROLE_ARN=... AWS_REGION=... ./scripts/deploy.sh
 ```
 
-`scripts/deploy.sh` builds, zips only `dist/lambda-http-proxy.mjs` (no
-node_modules — SDK is runtime-provided), and configures the Function URL with
-`RESPONSE_STREAM`.
+`scripts/deploy.sh` builds with the AWS CLI only, zips only
+`dist/lambda-http-proxy.mjs` (no node_modules — SDK is runtime-provided), and
+configures the Function URL with `RESPONSE_STREAM`.
 
 ## Conventions
 
@@ -153,5 +160,6 @@ node_modules — SDK is runtime-provided), and configures the Function URL with
   beyond Node builtins. Anything SDK-related is dev/test only.
 - The published surface is `.` (the handler) and `./proxy-request-handler.mjs`.
   Don't move `scripts/proxy-request-handler.mjs` into `test/` — it ships.
-- When touching header handling or path encoding, run `smoke:bedrock` — Bedrock
-  is the sensitive case (double-encoded path, signed `x-amzn-bedrock-*`).
+- When touching header handling or path encoding, the Bedrock real-AWS test is
+  the sensitive case (double-encoded path, signed `x-amzn-bedrock-*`). It runs
+  as part of `npm test`.

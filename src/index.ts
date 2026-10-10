@@ -34,9 +34,25 @@ export interface ResponseMetadata {
 }
 
 export interface ResponseStream extends Writable {
+  /*
+   * Optional annotation used only by the non-runtime fallback so a plain-node
+   * harness can read the status/headers without re-parsing the prelude. The
+   * real runtime never sets this — it maps the prelude to real HTTP metadata.
+   */
   __meta?: ResponseMetadata;
+  __preludeWritten?: boolean;
   setResponseMeta?(meta: ResponseMetadata): void;
 }
+
+/*
+ * Eight NUL bytes separate the JSON metadata prelude from the response body on
+ * the response-streaming wire. This matches the AWS runtime exactly:
+ * HttpResponseStream.from writes the prelude, then 8 NUL bytes, then the body.
+ * A real Function URL in RESPONSE_STREAM mode consumes this prelude at the edge
+ * and turns it into the real HTTP status line + headers, so the caller sees a
+ * clean response whose BODY is byte-for-byte the upstream body.
+ */
+const PRELUDE_DELIMITER = Buffer.alloc(8);
 
 export interface AwsLambdaGlobal {
   streamifyResponse(
@@ -220,18 +236,28 @@ function applyResponseMetadata(
   if (globalThis.awslambda?.HttpResponseStream.from) {
     return globalThis.awslambda.HttpResponseStream.from(responseStream, meta);
   }
-  const annotated = responseStream;
   /*
-   * Annotating the externally-owned stream is the local-emulator contract for
-   * delivering status + headers; the real runtime path above never reaches here.
+   * Non-runtime fallback. Reproduce the real response-streaming wire format so
+   * a plain-node harness receives exactly what a deployed Function URL emits:
+   * the JSON metadata prelude, eight NUL bytes, then the raw upstream body. The
+   * harness parses the prelude back into status + headers and exposes the body
+   * untouched — making the proxy output indistinguishable from the upstream.
+   *
+   * We also annotate __meta/setResponseMeta so simpler consumers can read the
+   * metadata without parsing the prelude.
    */
   /* eslint-disable no-param-reassign */
   responseStream.__meta = meta;
   if (typeof responseStream.setResponseMeta === 'function') {
     responseStream.setResponseMeta(meta);
   }
+  if (responseStream.__preludeWritten !== true) {
+    responseStream.__preludeWritten = true;
+    responseStream.write(Buffer.from(JSON.stringify(meta), 'utf8'));
+    responseStream.write(PRELUDE_DELIMITER);
+  }
   /* eslint-enable no-param-reassign */
-  return annotated;
+  return responseStream;
 }
 
 interface ForwardArgs {

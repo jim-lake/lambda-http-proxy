@@ -1,6 +1,3 @@
 node_modules/
 dist/
 *.log
-.aws-sam/
-.sam-event.json
-.aws-sam/

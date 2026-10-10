@@ -28,12 +28,8 @@
     "build:bundle": "rollup -c rollup.config.mjs",
     "build": "npm run ts:check && npm run build:bundle",
     "prepublishOnly": "npm run build",
-    "test": "npm run build && tsx --test \"test/**/*.test.mjs\"",
+    "test": "npm run build:bundle && tsx --test \"test/**/*.test.mjs\"",
     "test:only": "tsx --test \"test/**/*.test.mjs\"",
-    "make-event": "tsx test/make-event.mjs",
-    "sam:invoke": "npm run build && tsx test/make-event.mjs > .sam-event.json && sam local invoke ProxyFunction --event .sam-event.json",
-    "smoke:s3": "bash scripts/run-smoke.sh test/smoke-s3.mjs",
-    "smoke:bedrock": "bash scripts/run-smoke.sh test/smoke-bedrock.mjs",
     "probe:sdk-version": "echo 'Deploy a probe to your target region to read the exact runtime SDK version; see lambdaRuntime.sdkVersionProbe'"
   },
   "keywords": [
@@ -59,13 +55,9 @@
     }
   },
   "devDependencies": {
-    "@aws-crypto/sha256-js": "5.2.0",
     "@aws-sdk/client-bedrock": "3.1105.0",
     "@aws-sdk/client-bedrock-runtime": "3.1105.0",
-    "@aws-sdk/client-lambda": "3.1105.0",
     "@aws-sdk/client-s3": "3.1105.0",
-    "@aws-sdk/credential-providers": "3.1105.0",
-    "@aws-sdk/signature-v4": "3.370.0",
     "@eslint/js": "9.39.5",
     "@rollup/plugin-node-resolve": "16.0.3",
     "@smithy/node-http-handler": "4.12.1",

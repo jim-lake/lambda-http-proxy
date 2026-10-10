@@ -5,8 +5,10 @@ import { Buffer } from 'node:buffer';
 import { PassThrough } from 'node:stream';
 
 // Unit tests exercise proxy() directly against throwaway http origins. No
-// Lambda runtime is involved — proxy() annotates the response stream via its
-// non-runtime fallback path. Real-runtime behaviour is covered by `sam:invoke`.
+// Lambda runtime is involved — proxy() emits the response-streaming wire format
+// via its non-runtime fallback path, and the test strips the prelude to recover
+// the raw upstream body. The full RESPONSE_STREAM output contract is covered by
+// test/function-url.test.mjs.
 process.env.PROXY_TARGET_SCHEME = 'http';
 const { proxy } = await import('../dist/lambda-http-proxy.mjs');
 
@@ -26,18 +28,37 @@ function startOrigin(handler) {
   });
 }
 
-/** Collect a PassThrough's bytes + metadata as if we were the Function URL caller. */
+/*
+ * Collect a PassThrough's bytes + metadata as if we were the Function URL
+ * edge. The proxy's non-runtime fallback now emits the real response-streaming
+ * wire format (JSON prelude + 8 NUL bytes + body), identical to a deployed
+ * RESPONSE_STREAM Function URL. We de-prelude here so `body` is the raw
+ * upstream body — byte-for-byte what the caller would pipe downstream.
+ */
 function captureStream() {
   const stream = new PassThrough();
   const chunks = [];
   stream.on('data', (c) => chunks.push(c));
   const done = new Promise((resolve) => {
-    stream.on('end', () =>
+    stream.on('end', () => {
+      const all = Buffer.concat(chunks);
+      const sep = Buffer.alloc(8);
+      const idx = all.indexOf(sep);
+      if (idx === -1) {
+        resolve({ body: all.toString('utf8'), meta: stream.__meta });
+        return;
+      }
+      let meta;
+      try {
+        meta = JSON.parse(all.subarray(0, idx).toString('utf8'));
+      } catch {
+        meta = stream.__meta;
+      }
       resolve({
-        body: Buffer.concat(chunks).toString('utf8'),
-        meta: stream.__meta,
-      })
-    );
+        body: all.subarray(idx + sep.length).toString('utf8'),
+        meta: meta ?? stream.__meta,
+      });
+    });
   });
   return { stream, done };
 }
@@ -158,9 +179,11 @@ test('streams chunks incrementally rather than buffering', async () => {
   const stream = new PassThrough();
   const timings = [];
   const start = Date.now();
-  stream.on('data', (c) =>
-    timings.push({ t: Date.now() - start, chunk: c.toString() })
-  );
+  const raw = [];
+  stream.on('data', (c) => {
+    raw.push(c);
+    timings.push({ t: Date.now() - start, chunk: c.toString() });
+  });
   const done = new Promise((r) => stream.on('end', r));
 
   await proxy(event, stream);
@@ -168,9 +191,14 @@ test('streams chunks incrementally rather than buffering', async () => {
   await done;
   server.close();
 
-  const full = timings.map((x) => x.chunk).join('');
-  assert.equal(full, 'chunk-1;chunk-2;chunk-3');
-  // At least one chunk arrived before the delayed ones (proves streaming).
+  // Strip the response-streaming prelude (JSON + 8 NUL bytes) to recover the
+  // raw upstream body, then assert the body streamed through intact.
+  const all = Buffer.concat(raw);
+  const sep = Buffer.alloc(8);
+  const idx = all.indexOf(sep);
+  const bodyBytes = idx === -1 ? all : all.subarray(idx + sep.length);
+  assert.equal(bodyBytes.toString('utf8'), 'chunk-1;chunk-2;chunk-3');
+  // Multiple distinct writes arrived over time (proves streaming, not buffering).
   assert.ok(timings.length >= 2, 'expected multiple streamed chunks');
 });
 
