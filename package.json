@@ -1,6 +1,6 @@
 {
   "name": "lambda-http-proxy",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "description": "AWS Lambda HTTP proxy with response streaming that forwards SigV4-signed requests verbatim",
   "type": "module",
   "main": "dist/lambda-http-proxy.mjs",
