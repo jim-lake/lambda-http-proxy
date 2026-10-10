@@ -54,6 +54,9 @@ export interface ResponseStream extends Writable {
  */
 const PRELUDE_DELIMITER = Buffer.alloc(8);
 
+/* A zero-length chunk used to trigger the runtime's lazy prelude emission. */
+const EMPTY_CHUNK = Buffer.alloc(0);
+
 export interface AwsLambdaGlobal {
   streamifyResponse(
     handler: (
@@ -260,6 +263,28 @@ function applyResponseMetadata(
   return responseStream;
 }
 
+/*
+ * Ensure the metadata prelude is emitted even when no body bytes follow.
+ *
+ * On the real runtime, HttpResponseStream.from writes the prelude lazily on the
+ * first write/end. An empty-body upstream response (notably HEAD, e.g.
+ * HeadObject) produces zero body writes, which risks the response ending with
+ * the prelude never flushed — the edge would then build an HTTP response
+ * missing the upstream headers (e.g. Content-Length). Writing a zero-length
+ * chunk triggers the runtime's first-write hook so the prelude (status +
+ * headers) is sent, while contributing zero body bytes — the output stays
+ * byte-for-byte identical to the upstream.
+ *
+ * In the non-runtime fallback the prelude is already written eagerly by
+ * applyResponseMetadata, so this is a harmless no-op there.
+ */
+function flushResponsePrelude(responseStream: ResponseStream): void {
+  if (responseStream.__preludeWritten === true) {
+    return;
+  }
+  responseStream.write(EMPTY_CHUNK);
+}
+
 interface ForwardArgs {
   method: string;
   path: string;
@@ -295,6 +320,18 @@ async function forwardAndStream(
           headers: filterResponseHeaders(upstream.headers),
         };
         const stream = applyResponseMetadata(responseStream, meta);
+
+        /*
+         * Force the metadata prelude (status + headers) to be emitted now,
+         * before any body byte. The real runtime's HttpResponseStream.from
+         * writes the prelude lazily on the first write/end; a HEAD (or any
+         * empty-body) response produces zero body writes, so without this an
+         * empty-body response could end before the prelude — and the edge would
+         * build a response with no headers (e.g. a missing Content-Length on
+         * HeadObject). Writing an empty chunk triggers the prelude immediately
+         * and streams zero body bytes, matching the upstream exactly.
+         */
+        flushResponsePrelude(stream);
 
         upstream.on('error', reject);
         stream.on('error', reject);

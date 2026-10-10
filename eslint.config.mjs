@@ -15,13 +15,16 @@ export default tseslint.config(
   ...tseslint.configs.stylisticTypeChecked,
   importPlugin.flatConfigs.recommended,
   {
-    files: ['src/**/*.ts'],
+    files: ['src/**/*.ts', 'test/**/*.ts'],
     languageOptions: {
       parserOptions: {
         projectService: true,
         tsconfigRootDir: import.meta.dirname,
       },
     },
+  },
+  {
+    files: ['src/**/*.ts'],
     rules: {
       'import/no-unresolved': 'off',
       'function-paren-newline': 'off',
@@ -355,6 +358,43 @@ export default tseslint.config(
       'switch-colon-spacing': ['error', { after: true, before: false }],
       'template-tag-spacing': ['error', 'never'],
       'unicode-bom': ['error', 'never'],
+    },
+  },
+  {
+    /*
+     * Tests and test helpers: keep type-aware checking on, but relax the
+     * rules that fight idiomatic test code (ad-hoc origins, SDK interop,
+     * console diagnostics, nested async callbacks, throwaway shapes).
+     */
+    files: ['test/**/*.ts'],
+    rules: {
+      'import/no-unresolved': 'off',
+      'no-console': 'off',
+      'func-style': 'off',
+      'func-names': 'off',
+      'prefer-arrow-callback': 'off',
+      'max-nested-callbacks': 'off',
+      'max-statements-per-line': 'off',
+      'no-empty-function': 'off',
+      'no-return-assign': 'off',
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
+      '@typescript-eslint/no-non-null-assertion': 'off',
+      '@typescript-eslint/no-floating-promises': 'off',
+      '@typescript-eslint/no-confusing-void-expression': 'off',
+      '@typescript-eslint/no-extraneous-class': 'off',
+      '@typescript-eslint/require-await': 'off',
+      '@typescript-eslint/no-unnecessary-condition': 'off',
+      '@typescript-eslint/restrict-template-expressions': 'off',
+      '@typescript-eslint/prefer-nullish-coalescing': 'off',
+      '@typescript-eslint/restrict-plus-operands': 'off',
+      '@typescript-eslint/no-misused-promises': 'off',
+      '@typescript-eslint/unbound-method': 'off',
+      '@typescript-eslint/no-dynamic-delete': 'off',
     },
   }
 );

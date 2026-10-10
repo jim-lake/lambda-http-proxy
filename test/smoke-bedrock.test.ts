@@ -9,7 +9,7 @@ import {
   BedrockRuntimeClient,
   InvokeModelWithResponseStreamCommand,
 } from '@aws-sdk/client-bedrock-runtime';
-import { ProxyFunctionUrlRequestHandler } from './function-url-runtime.mjs';
+import { makeProxyRequestHandler } from './proxy-target.ts';
 
 /*
  * End-to-end proof for Bedrock against REAL AWS, through the proxy running in
@@ -30,11 +30,12 @@ import { ProxyFunctionUrlRequestHandler } from './function-url-runtime.mjs';
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const MODEL_ID = process.env.MODEL_ID || 'us.amazon.nova-2-lite-v1:0';
 
-function assertSignatureSurvived(err) {
-  const name = err?.name || 'Error';
-  const msg = err?.message || '';
+function assertSignatureSurvived(err: unknown): void {
+  const e = err as { name?: string; message?: string };
+  const name = e?.name || 'Error';
+  const msg = e?.message || '';
   assert.ok(
-    !/SignatureDoesNotMatch/.test(`${name} ${msg}`),
+    !`${name} ${msg}`.includes('SignatureDoesNotMatch'),
     `SignatureDoesNotMatch — proxy mangled the signed request: ${name} ${msg}`
   );
 }
@@ -42,7 +43,7 @@ function assertSignatureSurvived(err) {
 test('Bedrock ListFoundationModels survives the proxy hop (real AWS)', async () => {
   const control = new BedrockClient({
     region: REGION,
-    requestHandler: new ProxyFunctionUrlRequestHandler(),
+    requestHandler: makeProxyRequestHandler(),
   });
   try {
     const res = await control.send(new ListFoundationModelsCommand({}));
@@ -58,7 +59,7 @@ test('Bedrock ListFoundationModels survives the proxy hop (real AWS)', async () 
 test('Bedrock InvokeModelWithResponseStream streams raw event-stream through the proxy (real AWS)', async () => {
   const runtime = new BedrockRuntimeClient({
     region: REGION,
-    requestHandler: new ProxyFunctionUrlRequestHandler(),
+    requestHandler: makeProxyRequestHandler(),
   });
   const payload = {
     messages: [
@@ -78,7 +79,7 @@ test('Bedrock InvokeModelWithResponseStream streams raw event-stream through the
 
     let chunks = 0;
     let text = '';
-    for await (const event of res.body) {
+    for await (const event of res.body ?? []) {
       if (event.chunk?.bytes) {
         chunks += 1;
         const decoded = JSON.parse(
@@ -93,6 +94,7 @@ test('Bedrock InvokeModelWithResponseStream streams raw event-stream through the
     // If we got here, the binary event-stream survived the proxy byte-for-byte
     // and the SDK decoded it. (text may be empty depending on the model.)
     assert.ok(chunks >= 1, 'expected at least one decoded stream event');
+    assert.equal(typeof text, 'string');
   } catch (err) {
     assertSignatureSurvived(err);
   }

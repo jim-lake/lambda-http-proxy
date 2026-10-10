@@ -1,6 +1,6 @@
 {
   "name": "lambda-http-proxy",
-  "version": "0.0.5",
+  "version": "0.0.7",
   "description": "AWS Lambda HTTP proxy with response streaming that forwards SigV4-signed requests verbatim",
   "type": "module",
   "main": "dist/lambda-http-proxy.mjs",
@@ -23,13 +23,15 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "ts:check": "tsc --noEmit",
-    "lint": "eslint src --fix",
+    "lint": "eslint src test --fix",
     "pretty": "prettier -u --write \"**/*\" --log-level warn",
     "build:bundle": "rollup -c rollup.config.mjs",
     "build": "npm run ts:check && BUILD_BUMP=1 npm run build:bundle",
     "prepublishOnly": "npm run build",
-    "test": "npm run build:bundle && tsx --test \"test/**/*.test.mjs\"",
-    "test:only": "tsx --test \"test/**/*.test.mjs\"",
+    "test": "npm run build:bundle && tsx --test \"test/**/*.ts\"",
+    "test:only": "tsx --test \"test/**/*.ts\"",
+    "test:local": "PROXY_TARGET=local tsx --test \"test/*.test.ts\"",
+    "test:deployed": "PROXY_TARGET=deployed node --env-file=.env --import tsx --test \"test/*.test.ts\"",
     "probe:sdk-version": "echo 'Deploy a probe to your target region to read the exact runtime SDK version; see lambdaRuntime.sdkVersionProbe'"
   },
   "keywords": [

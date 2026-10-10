@@ -70,4 +70,15 @@ export default [
     output: { file: 'dist/lambda-http-proxy.d.ts', format: 'es' },
     plugins: [dts()],
   },
+  {
+    /*
+     * Also emit `.d.mts`. The artifact is imported by its real `.mjs` path in
+     * the tests; under `moduleResolution: bundler`, tsc maps a `.mjs` specifier
+     * to `.d.mts` (not the sibling `.d.ts`), so this makes those imports typed.
+     */
+    input: 'src/index.ts',
+    external: isExternal,
+    output: { file: 'dist/lambda-http-proxy.d.mts', format: 'es' },
+    plugins: [dts()],
+  },
 ];
