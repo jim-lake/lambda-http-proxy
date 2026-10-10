@@ -1,0 +1,86 @@
+{
+  "name": "lambda-http-proxy",
+  "version": "1.0.0",
+  "description": "AWS Lambda HTTP proxy with response streaming that forwards SigV4-signed requests verbatim",
+  "type": "module",
+  "main": "dist/lambda-http-proxy.mjs",
+  "module": "dist/lambda-http-proxy.mjs",
+  "types": "dist/lambda-http-proxy.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/lambda-http-proxy.d.ts",
+      "import": "./dist/lambda-http-proxy.mjs"
+    },
+    "./proxy-request-handler.mjs": "./scripts/proxy-request-handler.mjs"
+  },
+  "files": [
+    "dist",
+    "scripts/proxy-request-handler.mjs"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "ts:check": "tsc --noEmit",
+    "lint": "eslint src --fix",
+    "pretty": "prettier -u --write \"**/*\" --log-level warn",
+    "build:bundle": "rollup -c rollup.config.mjs",
+    "build": "npm run ts:check && npm run build:bundle",
+    "prepublishOnly": "npm run build",
+    "test": "npm run build && tsx --test \"test/**/*.test.mjs\"",
+    "test:only": "tsx --test \"test/**/*.test.mjs\"",
+    "make-event": "tsx test/make-event.mjs",
+    "sam:invoke": "npm run build && tsx test/make-event.mjs > .sam-event.json && sam local invoke ProxyFunction --event .sam-event.json",
+    "smoke:s3": "bash scripts/run-smoke.sh test/smoke-s3.mjs",
+    "smoke:bedrock": "bash scripts/run-smoke.sh test/smoke-bedrock.mjs",
+    "probe:sdk-version": "echo 'Deploy a probe to your target region to read the exact runtime SDK version; see lambdaRuntime.sdkVersionProbe'"
+  },
+  "keywords": [
+    "aws",
+    "lambda",
+    "proxy",
+    "streaming",
+    "sigv4"
+  ],
+  "license": "MIT",
+  "lambdaRuntime": {
+    "runtime": "nodejs24.x",
+    "comment": "The @aws-sdk/* and @smithy/* packages are provided by the managed runtime and are marked external in rollup.config.mjs. AWS documents the included SDK version as runtime- AND region-specific; the authoritative source is the deployed runtime itself. Pinned per operator confirmation.",
+    "sdkVersionProbe": "Deploy a function with: export const handler = async () => ({ version: (await import('@aws-sdk/client-s3/package.json', { with: { type: 'json' } })).default.version }); then invoke it in your target region to confirm.",
+    "providedSdkVersion": "3.1105.0"
+  },
+  "peerDependencies": {
+    "@smithy/protocol-http": ">=4"
+  },
+  "peerDependenciesMeta": {
+    "@smithy/protocol-http": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@aws-crypto/sha256-js": "5.2.0",
+    "@aws-sdk/client-bedrock": "3.1105.0",
+    "@aws-sdk/client-bedrock-runtime": "3.1105.0",
+    "@aws-sdk/client-lambda": "3.1105.0",
+    "@aws-sdk/client-s3": "3.1105.0",
+    "@aws-sdk/credential-providers": "3.1105.0",
+    "@aws-sdk/signature-v4": "3.370.0",
+    "@eslint/js": "9.39.5",
+    "@rollup/plugin-node-resolve": "16.0.3",
+    "@smithy/node-http-handler": "4.12.1",
+    "@smithy/protocol-http": "5.6.2",
+    "@smithy/types": "4.19.0",
+    "@types/node": "26.6.5",
+    "esbuild": "0.28.2",
+    "eslint": "9.39.5",
+    "eslint-plugin-import": "2.32.0",
+    "prettier": "3.9.9",
+    "rollup": "4.64.3",
+    "rollup-plugin-dts": "6.5.1",
+    "rollup-plugin-esbuild": "6.2.1",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.1"
+  }
+}
