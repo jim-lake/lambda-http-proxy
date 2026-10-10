@@ -25,10 +25,14 @@ The proxy is consumed as a custom **`requestHandler`** on any AWS SDK v3 client
 to the proxy; the proxy forwards it to the real host (S3, Bedrock, …) and
 streams the response straight back through the SDK.
 
-- Handler source: `src/index.ts` (single file).
-- Published SDK request handler: `scripts/proxy-request-handler.mjs`.
-- Built artifact: `dist/lambda-http-proxy.mjs` (+ `.d.ts`). `dist/` is
-  gitignored; rebuild with `npm run build`.
+Two published entry points, both TypeScript source built to `dist/` (gitignored;
+rebuild with `npm run build`):
+
+- `src/lambda-http-proxy.ts` — the Lambda handler. Zero runtime deps beyond Node
+  builtins. Built to `dist/lambda-http-proxy.mjs` (handler `lambda-http-proxy.handler`).
+- `src/proxy-request-handler.ts` — the SDK `requestHandler` consumers import.
+  Built to `dist/proxy-request-handler.mjs`; `@smithy/protocol-http` is a
+  peer/external dep, not bundled.
 
 ## How the proxy works
 
@@ -43,9 +47,10 @@ streams the response straight back through the SDK.
    - Content-length never collides. The outer POST has its own content-length
      (envelope size); the signed content-length rides inside the envelope
      headers and is forwarded to the upstream unchanged.
-3. The Lambda handler unwraps the envelope (`parseEvent` in `src/index.ts`). If
-   the body is a `__proxyEnvelope`, it uses `envelope.{path,method,headers,body}`;
-   otherwise it falls back to the raw Function URL event.
+3. The Lambda handler unwraps the envelope (`parseEvent` in
+   `src/lambda-http-proxy.ts`). If the body is a `__proxyEnvelope`, it uses
+   `envelope.{path,method,headers,body}`; otherwise it falls back to the raw
+   Function URL event.
 4. `buildUpstreamHeaders` forwards every signed header and strips only
    hop-by-hop headers plus Function-URL-injected ones (`x-amzn-trace-id`,
    `x-forwarded-*`, `cloudfront-*`, `x-amz-cf-id`, `via`). **Do not** blanket-
@@ -73,7 +78,8 @@ because importing an AWS SDK client sets `globalThis.awslambda = {}` (empty).
 - Node `v24.x`. Deps installed (`node_modules/`). Runtime is `nodejs24.x`.
 - **TypeScript is only a type-checker** — never an emitter. `tsc --noEmit` only.
 - **esbuild** (via `rollup-plugin-esbuild`) transpiles; **rollup-plugin-dts**
-  emits types. Two-pass build in `rollup.config.mjs`.
+  emits types. `rollup.config.mjs` builds both entry points (handler +
+  requestHandler), each as `.mjs` plus `.d.ts`/`.d.mts`.
 - **tsx** runs everything executable (the tests).
 - The AWS SDK (`@aws-sdk/*`, `@smithy/*`) is **external** in the bundle — the
   managed runtime ships it. Pinned version is recorded in
@@ -82,7 +88,7 @@ because importing an AWS SDK client sets `globalThis.awslambda = {}` (empty).
 
 ```bash
 npm run ts:check     # tsc --noEmit (type-check only)
-npm run lint         # eslint src --fix  (strict; src only, never dist)
+npm run lint         # eslint src test --fix  (strict)
 npm run pretty       # prettier --write across the repo
 npm run build        # ts:check + rollup (esbuild bundle + dts) -> dist/
 npm test             # build, then run ALL tests (incl. real AWS)
@@ -90,60 +96,67 @@ npm run test:only    # just the tests, no rebuild
 ```
 
 Pinned to resolve peer ranges: `typescript@6.0.3` (fits typescript-eslint's
-`<6.1.0`), `eslint@9`. Keep `src/**/*.ts` lint-clean.
+`<6.1.0`), `eslint@9`. Keep `src/**/*.ts` and `test/**/*.ts` lint-clean.
 
-## The gate (run EVERY time; all three must be green)
+## The gate (run EVERY time; all four must be green)
 
-Three separate commands, all green at the end of every change:
+Four separate commands, all green at the end of every change:
 
 ```bash
-npm run ts:check     # tsc --noEmit
-npm run lint         # eslint src --fix (strict, src only)
-npm test             # build + tsx --test "test/**/*.test.mjs" (incl. real AWS)
+npm run ts:check       # tsc --noEmit
+npm run lint           # eslint src test --fix (strict)
+npm test               # build + tsx --test "test/**/*.test.ts" (incl. real AWS)
+npm run test:deployed  # smoke tests against the LIVE deployed Function URL
 ```
 
 `npm test` runs the artifact bundle then every test file, **including the
-real-AWS S3 and Bedrock end-to-end tests**. The box always has valid AWS
-credentials; **nothing needs Docker, SAM, RIE, or LocalStack**. Do not add skips
-or gating for the real-AWS tests. If any of the three commands is not green, the
-change is not done.
+real-AWS S3 and Bedrock end-to-end tests** (via the in-process plain-node
+Function URL emulation). `npm run test:deployed` runs the same smoke tests
+against the **live deployed Function URL** named in `.env`
+(`LAMBDA_FUNCTION_URL`) — the outer envelope POST is SigV4-signed for `lambda`
+and sent over real HTTPS, exercising the full deployed path including IAM auth.
+The box always has valid AWS credentials; **nothing needs Docker, SAM, RIE, or
+LocalStack**. Do not add skips or gating for the real-AWS tests. If any of the
+four commands is not green, the change is not done.
 
 ## Tests
 
-Three layers, all under `npm test`. Keep real test files as `test/**/*.test.mjs`
-— the runner glob is scoped to that so non-test `.mjs` in `test/` (the Function
-URL runtime helper) is not swept in and left hanging.
+Three layers, all under `npm test`. Test files are `test/**/*.test.ts`; shared
+non-test helpers (e.g. the Function URL runtime emulator) live beside them as
+plain `.ts` and are imported, not run directly.
 
-### 1. Unit tests — `test/proxy.test.mjs` (no network)
+### 1. Unit tests — `test/unit/proxy.test.ts` + `test/unit/proxy-request-handler.test.ts` (no network)
 
-Exercise `proxy()` directly against throwaway local http origins. No Lambda
-runtime involved (the non-runtime fallback emits the response-streaming wire
-format; the test strips the prelude to recover the raw upstream body). Cover:
-header preservation, Host preservation, body integrity, incremental streaming,
-the `x-amzn-bedrock-*` regression, and envelope path/headers/body.
+`proxy.test.ts` exercises `proxy()` directly against throwaway local http
+origins. No Lambda runtime involved (the non-runtime fallback emits the
+response-streaming wire format; the test strips the prelude to recover the raw
+upstream body). Covers header preservation, Host preservation, body integrity,
+incremental streaming, the `x-amzn-bedrock-*` regression, and envelope
+path/headers/body. `proxy-request-handler.test.ts` exercises the built
+`dist/proxy-request-handler.mjs` entry: it POSTs the signed request as an
+envelope to a throwaway local proxy and asserts the envelope shape and the
+surfaced response.
 
-### 2. Output-contract tests — `test/function-url.test.mjs` (no network)
+### 2. Output-contract tests — `test/unit/function-url.test.ts` (no network)
 
-Drive the proxy through `test/function-url-runtime.mjs`, a **plain-node**
+Drive the proxy through `test/function-url-runtime.ts`, a **plain-node**
 emulation of a Function URL in `RESPONSE_STREAM` mode. It installs a faithful
 `globalThis.awslambda` shim (`streamifyResponse` + `HttpResponseStream.from`
 writing the JSON prelude + eight NUL bytes + body), then acts as the AWS edge:
 strips the prelude and returns `{ statusCode, headers, body }` where `body` is a
 Readable. Assert the output is **indistinguishable from the upstream**: status,
-headers, binary body integrity, and incremental delivery. This is the expected
-use case (invoke the Function URL with response streaming; pipe the raw output
-straight downstream).
+headers, binary body integrity, and incremental delivery.
 
-### 3. Real-AWS end-to-end tests — `test/smoke-{s3,bedrock}.test.mjs`
+### 3. Real-AWS end-to-end tests — `test/smoke-{s3,bedrock}.test.ts`
 
 A real SDK client signs the request; `ProxyFunctionUrlRequestHandler` (exported
-from `test/function-url-runtime.mjs`) wraps it in the proxy envelope and runs it
+from `test/function-url-runtime.ts`) wraps it in the proxy envelope and runs it
 through the same plain-node Function URL emulation, which forwards it verbatim
 to **real AWS over HTTPS** and streams the raw response back. No Docker, no SAM
 — just the ambient credentials on the box.
 
-- `smoke-s3.test.mjs`: ListBuckets + GetObject.
-- `smoke-bedrock.test.mjs`: ListFoundationModels + `InvokeModelWithResponseStream`.
+- `smoke-s3.test.ts`: ListBuckets + GetObject.
+- `smoke-bedrock.test.ts`: ListFoundationModels + `InvokeModelWithResponseStream`.
   Because the body streams back raw, the binary
   `application/vnd.amazon.eventstream` response is decoded by the SDK intact —
   this validates true streaming with no buffering emulator in the path.
@@ -167,10 +180,11 @@ configures the Function URL with `RESPONSE_STREAM`.
 
 ## Conventions
 
-- Keep `src/index.ts` a single comment-light file; it has no runtime deps
-  beyond Node builtins. Anything SDK-related is dev/test only.
-- The published surface is `.` (the handler) and `./proxy-request-handler.mjs`.
-  Don't move `scripts/proxy-request-handler.mjs` into `test/` — it ships.
+- Keep `src/lambda-http-proxy.ts` a single comment-light file; it has no runtime
+  deps beyond Node builtins. Anything SDK-related is dev/test only.
+- The published surface is `.` (the handler, `dist/lambda-http-proxy.mjs`) and
+  `./proxy-request-handler.mjs` (`dist/proxy-request-handler.mjs`). Both are
+  built from `src/`; `@smithy/*` stays external in the requestHandler bundle.
 - When touching header handling or path encoding, the Bedrock real-AWS test is
   the sensitive case (double-encoded path, signed `x-amzn-bedrock-*`). It runs
   as part of `npm test`.

@@ -33,10 +33,7 @@ import { makeProxyRequestHandler } from './proxy-target.ts';
 const MAX_READ_BYTES = 10 * 1024 * 1024; // 10 MB cap
 
 function s3For(region: string): S3Client {
-  return new S3Client({
-    region,
-    requestHandler: makeProxyRequestHandler(),
-  });
+  return new S3Client({ region, requestHandler: makeProxyRequestHandler() });
 }
 
 interface AwsError {

@@ -2,6 +2,7 @@
 import http from 'node:http';
 import { Buffer } from 'node:buffer';
 import { PassThrough } from 'node:stream';
+import type { Readable } from 'node:stream';
 import type { AddressInfo } from 'node:net';
 import type { ResponseMetadata } from '../dist/lambda-http-proxy.mjs';
 
@@ -15,9 +16,7 @@ export interface Origin {
  * test can assert the proxy forwarded it byte-for-byte — the crux of SigV4
  * survival: the bytes the origin sees must match what was signed.
  */
-export function startOrigin(
-  handler: http.RequestListener
-): Promise<Origin> {
+export function startOrigin(handler: http.RequestListener): Promise<Origin> {
   return new Promise((resolve) => {
     const server = http.createServer(handler);
     server.listen(0, '127.0.0.1', () => {
@@ -72,4 +71,13 @@ export function captureStream(): {
     });
   });
   return { stream, done };
+}
+
+/* Collect a Readable to a Buffer. */
+export async function collect(stream: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const c of stream) {
+    chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c as string));
+  }
+  return Buffer.concat(chunks);
 }

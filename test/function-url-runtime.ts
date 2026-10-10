@@ -233,6 +233,35 @@ function flattenHeaders(
   return out;
 }
 
+/*
+ * Undo the AWS Lambda Function URL edge's response-header remapping. In
+ * RESPONSE_STREAM mode the edge renames a set of reserved response headers by
+ * prefixing them with `x-amzn-remapped-` (e.g. upstream `Content-Length`
+ * arrives as `x-amzn-remapped-content-length`). Restore the canonical names so
+ * the response matches the upstream exactly (so, e.g., HeadObject's
+ * ContentLength is populated). An existing canonical header is never
+ * overwritten; the remapped alias is dropped once restored.
+ */
+const REMAP_PREFIX = 'x-amzn-remapped-';
+
+function unremapHeaders(
+  headers: Record<string, string>
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    const lower = k.toLowerCase();
+    if (lower.startsWith(REMAP_PREFIX)) {
+      const canonical = lower.slice(REMAP_PREFIX.length);
+      if (out[canonical] === undefined && headers[canonical] === undefined) {
+        out[canonical] = v;
+      }
+      continue;
+    }
+    out[k] = v;
+  }
+  return out;
+}
+
 /* Convenience: collect a Readable to a Buffer. */
 export async function collect(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -392,9 +421,7 @@ export class ProxyFunctionUrlHttpsRequestHandler {
     const { createHash, createHmac } = await import('node:crypto');
     // Minimal HashConstructor backed by Node crypto (no @aws-crypto dep).
     class Sha256 {
-      private readonly hash: ReturnType<
-        typeof createHmac | typeof createHash
-      >;
+      private readonly hash: ReturnType<typeof createHmac | typeof createHash>;
 
       constructor(secret?: string | Uint8Array) {
         this.hash = secret
@@ -412,9 +439,8 @@ export class ProxyFunctionUrlHttpsRequestHandler {
     }
     let credentials = this.credentials;
     if (!credentials) {
-      const { defaultProvider } = await import(
-        '@aws-sdk/credential-provider-node'
-      );
+      const { defaultProvider } =
+        await import('@aws-sdk/credential-provider-node');
       credentials = defaultProvider();
     }
     this.signer = new SignatureV4({
@@ -479,9 +505,7 @@ export class ProxyFunctionUrlHttpsRequestHandler {
           resolve({
             response: new HttpResponse({
               statusCode: res.statusCode ?? 200,
-              headers: flattenHeaders(
-                res.headers
-              ),
+              headers: unremapHeaders(flattenHeaders(res.headers)),
               body: res,
             }),
           });

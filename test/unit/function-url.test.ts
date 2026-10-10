@@ -167,7 +167,7 @@ test('empty-body response (HEAD) still conveys status and headers', async () => 
   assert.equal(statusCode, 200);
   // Upstream headers survive even with an empty body.
   assert.equal(headers['content-length'], '12345');
-  assert.equal(headers['etag'], '"deadbeef"');
+  assert.equal(headers.etag, '"deadbeef"');
   assert.equal(headers['content-type'], 'application/octet-stream');
   // Body is genuinely empty — byte-for-byte the upstream (HEAD) body.
   assert.equal(received.length, 0);

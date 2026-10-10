@@ -213,12 +213,7 @@ test('uses envelope path/headers/body verbatim when present', async () => {
       let body = '';
       req.on('data', (d: Buffer) => (body += d));
       req.on('end', () => {
-        seen = {
-          method: req.method,
-          url: req.url,
-          headers: req.headers,
-          body,
-        };
+        seen = { method: req.method, url: req.url, headers: req.headers, body };
         res.writeHead(200);
         res.end('ok');
       });

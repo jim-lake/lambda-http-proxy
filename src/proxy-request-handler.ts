@@ -1,0 +1,194 @@
+import http from 'node:http';
+import https from 'node:https';
+import { Buffer } from 'node:buffer';
+import type { IncomingHttpHeaders, IncomingMessage } from 'node:http';
+import { HttpResponse } from '@smithy/protocol-http';
+
+/*
+ * The subset of a signed SDK request we read. We keep this loose on purpose:
+ * the SDK's HttpRequest shape is what flows in, and we only touch these fields.
+ */
+interface SignedRequest {
+  method: string;
+  path: string;
+  query?: Record<string, string | string[] | null | undefined>;
+  headers: Record<string, string>;
+  body?: unknown;
+}
+
+export interface ProxyRequestHandlerOptions {
+  /** Production: the HTTPS Function URL of the deployed proxy. */
+  proxyUrl?: string;
+  /** Local testing: proxy host over plain HTTP (default 127.0.0.1). */
+  proxyHost?: string;
+  /** Local testing: proxy port over plain HTTP (default 3000). */
+  proxyPort?: number;
+}
+
+/**
+ * A service-agnostic AWS SDK requestHandler that routes an already-signed
+ * request through the Lambda HTTP proxy instead of directly to the signed host.
+ *
+ * It wraps the entire signed request (path, method, headers, body) in a JSON
+ * envelope and POSTs it to the proxy. The proxy unwraps it and forwards the
+ * signed request verbatim to the real host, so SigV4 verification at the
+ * upstream passes unchanged. Works for any SigV4 service — S3, Bedrock,
+ * DynamoDB, etc. — because it never interprets the payload.
+ *
+ * Construct with either:
+ *   { proxyUrl: 'https://<id>.lambda-url.<region>.on.aws/' }   (production)
+ *   { proxyHost: '127.0.0.1', proxyPort: 3000 }                 (local http)
+ */
+export class ProxyRequestHandler {
+  private readonly client: typeof http | typeof https;
+  private readonly host: string;
+  private readonly port: number;
+  private readonly basePath: string;
+
+  constructor(opts: ProxyRequestHandlerOptions = {}) {
+    if (opts.proxyUrl) {
+      const u = new URL(opts.proxyUrl);
+      this.client = u.protocol === 'http:' ? http : https;
+      this.host = u.hostname;
+      this.port = u.port ? Number(u.port) : u.protocol === 'http:' ? 80 : 443;
+      this.basePath = u.pathname.replace(/\/$/, '');
+    } else {
+      this.client = http;
+      this.host = opts.proxyHost ?? '127.0.0.1';
+      this.port = opts.proxyPort ?? 3000;
+      this.basePath = '';
+    }
+  }
+
+  async handle(request: SignedRequest): Promise<{ response: HttpResponse }> {
+    const signedPath =
+      request.path + (request.query ? toQuery(request.query) : '');
+    const signedBody = await collectBody(request.body);
+
+    /*
+     * Wrap the ENTIRE signed request (path, method, headers, body) in a JSON
+     * envelope. The outer hop to the proxy is a plain application/json POST;
+     * the signed request rides inside untouched. This keeps the two layers
+     * separate so the outer content-length (envelope size) never collides with
+     * the signed content-length (real payload), and the exact signed path
+     * survives the Function URL hop (e.g. Bedrock's %253A).
+     */
+    const envelope = {
+      __proxyEnvelope: true,
+      path: signedPath,
+      method: request.method,
+      headers: { ...request.headers },
+      body: signedBody ? Buffer.from(signedBody).toString('base64') : undefined,
+      bodyIsBase64: true,
+    };
+    const envelopeBytes = Buffer.from(JSON.stringify(envelope), 'utf8');
+
+    return new Promise((resolve, reject) => {
+      const proxyReq = this.client.request(
+        {
+          host: this.host,
+          port: this.port,
+          method: 'POST',
+          path: `${this.basePath}/`,
+          headers: {
+            'content-type': 'application/json',
+            'content-length': Buffer.byteLength(envelopeBytes),
+          },
+        },
+        (proxyRes: IncomingMessage) => {
+          resolve({
+            response: new HttpResponse({
+              statusCode: proxyRes.statusCode ?? 200,
+              headers: unremapHeaders(flattenHeaders(proxyRes.headers)),
+              body: proxyRes,
+            }),
+          });
+        }
+      );
+      proxyReq.on('error', reject);
+      proxyReq.write(envelopeBytes);
+      proxyReq.end();
+    });
+  }
+}
+
+function toQuery(
+  query: Record<string, string | string[] | null | undefined>
+): string {
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(query)) {
+    if (v === null || v === undefined) {
+      parts.push(encodeURIComponent(k));
+    } else if (Array.isArray(v)) {
+      for (const item of v) {
+        parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(item)}`);
+      }
+    } else {
+      parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
+    }
+  }
+  return parts.length ? `?${parts.join('&')}` : '';
+}
+
+function flattenHeaders(headers: IncomingHttpHeaders): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    if (v === undefined) {
+      // header absent; skip it
+    } else if (Array.isArray(v)) {
+      out[k] = v.join(', ');
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+/*
+ * Undo the AWS Lambda Function URL edge's response-header remapping. In
+ * RESPONSE_STREAM mode the edge renames a set of reserved response headers by
+ * prefixing them with `x-amzn-remapped-` (e.g. the upstream `Content-Length`
+ * arrives as `x-amzn-remapped-content-length`). We restore the canonical names
+ * so the SDK — and any downstream consumer — sees the response exactly as the
+ * upstream service sent it (so, e.g., HeadObject's ContentLength is populated).
+ * The remapped alias is dropped once restored. An existing canonical header is
+ * never overwritten.
+ */
+const REMAP_PREFIX = 'x-amzn-remapped-';
+
+function unremapHeaders(
+  headers: Record<string, string>
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    const lower = k.toLowerCase();
+    if (lower.startsWith(REMAP_PREFIX)) {
+      const canonical = lower.slice(REMAP_PREFIX.length);
+      if (
+        !Object.hasOwn(out, canonical) &&
+        !Object.hasOwn(headers, canonical)
+      ) {
+        out[canonical] = v;
+      }
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+async function collectBody(
+  body: unknown
+): Promise<string | Buffer | undefined> {
+  if (!body) {
+    return undefined;
+  }
+  if (typeof body === 'string' || Buffer.isBuffer(body)) {
+    return body;
+  }
+  const chunks: Buffer[] = [];
+  for await (const c of body as AsyncIterable<Buffer>) {
+    chunks.push(c);
+  }
+  return Buffer.concat(chunks);
+}

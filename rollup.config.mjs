@@ -43,9 +43,17 @@ function isExternal(id) {
   return false;
 }
 
+const esbuildPlugin = () =>
+  esbuild({
+    target: 'node24',
+    minify: false,
+    sourceMap: true,
+    tsconfig: 'tsconfig.json',
+  });
+
 export default [
   {
-    input: 'src/index.ts',
+    input: 'src/lambda-http-proxy.ts',
     external: isExternal,
     output: {
       file: 'dist/lambda-http-proxy.mjs',
@@ -56,16 +64,11 @@ export default [
     },
     plugins: [
       nodeResolve({ exportConditions: ['node'], preferBuiltins: true }),
-      esbuild({
-        target: 'node24',
-        minify: false,
-        sourceMap: true,
-        tsconfig: 'tsconfig.json',
-      }),
+      esbuildPlugin(),
     ],
   },
   {
-    input: 'src/index.ts',
+    input: 'src/lambda-http-proxy.ts',
     external: isExternal,
     output: { file: 'dist/lambda-http-proxy.d.ts', format: 'es' },
     plugins: [dts()],
@@ -76,9 +79,40 @@ export default [
      * the tests; under `moduleResolution: bundler`, tsc maps a `.mjs` specifier
      * to `.d.mts` (not the sibling `.d.ts`), so this makes those imports typed.
      */
-    input: 'src/index.ts',
+    input: 'src/lambda-http-proxy.ts',
     external: isExternal,
     output: { file: 'dist/lambda-http-proxy.d.mts', format: 'es' },
+    plugins: [dts()],
+  },
+  /*
+   * Secondary entry point: the SDK requestHandler. Published as
+   * `lambda-http-proxy/proxy-request-handler.mjs`. @smithy/* stays external
+   * (peer-provided), so this bundle is tiny.
+   */
+  {
+    input: 'src/proxy-request-handler.ts',
+    external: isExternal,
+    output: {
+      file: 'dist/proxy-request-handler.mjs',
+      format: 'esm',
+      sourcemap: true,
+      exports: 'named',
+    },
+    plugins: [
+      nodeResolve({ exportConditions: ['node'], preferBuiltins: true }),
+      esbuildPlugin(),
+    ],
+  },
+  {
+    input: 'src/proxy-request-handler.ts',
+    external: isExternal,
+    output: { file: 'dist/proxy-request-handler.d.ts', format: 'es' },
+    plugins: [dts()],
+  },
+  {
+    input: 'src/proxy-request-handler.ts',
+    external: isExternal,
+    output: { file: 'dist/proxy-request-handler.d.mts', format: 'es' },
     plugins: [dts()],
   },
 ];

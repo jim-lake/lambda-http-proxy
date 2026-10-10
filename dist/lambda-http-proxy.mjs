@@ -3,7 +3,6 @@ import https from 'node:https';
 import { Buffer } from 'node:buffer';
 
 const PRELUDE_DELIMITER = Buffer.alloc(8);
-const EMPTY_CHUNK = Buffer.alloc(0);
 const HOP_BY_HOP = /* @__PURE__ */ new Set([
   "connection",
   "keep-alive",
@@ -111,12 +110,6 @@ function applyResponseMetadata(responseStream, meta) {
   }
   return responseStream;
 }
-function flushResponsePrelude(responseStream) {
-  if (responseStream.__preludeWritten === true) {
-    return;
-  }
-  responseStream.write(EMPTY_CHUNK);
-}
 async function forwardAndStream(args, responseStream) {
   const { method, path, upstreamHeaders, body, targetHost, scheme } = args;
   return new Promise((resolve, reject) => {
@@ -138,7 +131,6 @@ async function forwardAndStream(args, responseStream) {
           headers: filterResponseHeaders(upstream.headers)
         };
         const stream = applyResponseMetadata(responseStream, meta);
-        flushResponsePrelude(stream);
         upstream.on("error", reject);
         stream.on("error", reject);
         upstream.on("end", resolve);

@@ -11,11 +11,13 @@
       "types": "./dist/lambda-http-proxy.d.ts",
       "import": "./dist/lambda-http-proxy.mjs"
     },
-    "./proxy-request-handler.mjs": "./scripts/proxy-request-handler.mjs"
+    "./proxy-request-handler.mjs": {
+      "types": "./dist/proxy-request-handler.d.mts",
+      "import": "./dist/proxy-request-handler.mjs"
+    }
   },
   "files": [
-    "dist",
-    "scripts/proxy-request-handler.mjs"
+    "dist"
   ],
   "engines": {
     "node": ">=24"
