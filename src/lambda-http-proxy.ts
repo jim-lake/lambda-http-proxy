@@ -4,6 +4,14 @@ import { Buffer } from 'node:buffer';
 import type { IncomingHttpHeaders } from 'node:http';
 import type { Writable } from 'node:stream';
 
+/*
+ * Compile-time constant injected by esbuild (`define` in rollup.config.mjs)
+ * from package.json's version. Exported so a version bump always changes the
+ * output bytes and the symbol survives tree-shaking.
+ */
+declare const __BUILD_VERSION__: string;
+export const BUILD_VERSION: string = __BUILD_VERSION__;
+
 export interface FunctionUrlEvent {
   version: '2.0';
   rawPath?: string;

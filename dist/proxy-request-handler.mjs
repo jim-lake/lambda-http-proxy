@@ -3,6 +3,7 @@ import https from 'node:https';
 import { Buffer } from 'node:buffer';
 import { HttpResponse } from '@smithy/protocol-http';
 
+const BUILD_VERSION = "0.0.10";
 class ProxyRequestHandler {
   client;
   host;
@@ -125,5 +126,5 @@ async function collectBody(body) {
   return Buffer.concat(chunks);
 }
 
-export { ProxyRequestHandler, reassembleHeaders };
+export { BUILD_VERSION, ProxyRequestHandler, reassembleHeaders };
 //# sourceMappingURL=proxy-request-handler.mjs.map

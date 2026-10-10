@@ -1,5 +1,6 @@
 import { HttpResponse } from '@smithy/protocol-http';
 
+declare const BUILD_VERSION: string;
 interface SignedRequest {
     method: string;
     path: string;
@@ -41,5 +42,5 @@ declare class ProxyRequestHandler {
 }
 declare function reassembleHeaders(headers: Record<string, string>): Record<string, string>;
 
-export { ProxyRequestHandler, reassembleHeaders };
+export { BUILD_VERSION, ProxyRequestHandler, reassembleHeaders };
 export type { ProxyRequestHandlerOptions };

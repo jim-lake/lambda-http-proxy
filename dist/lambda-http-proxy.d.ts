@@ -1,5 +1,6 @@
 import { Writable } from 'node:stream';
 
+declare const BUILD_VERSION: string;
 interface FunctionUrlEvent {
     version: '2.0';
     rawPath?: string;
@@ -45,5 +46,5 @@ declare function proxy(event: FunctionUrlEvent, responseStream: ResponseStream):
 type ProxyFn = (event: FunctionUrlEvent, responseStream: ResponseStream, context: LambdaContext) => Promise<void>;
 declare const handler: ProxyFn;
 
-export { REMAP_PREFIX, handler, proxy };
+export { BUILD_VERSION, REMAP_PREFIX, handler, proxy };
 export type { AwsLambdaGlobal, FunctionUrlEvent, LambdaContext, ResponseMetadata, ResponseStream };

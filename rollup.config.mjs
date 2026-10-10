@@ -8,7 +8,12 @@ import { incrementBuildNumber } from './scripts/rollup-increment-build-number.mj
 // single bump covers the whole build. `incrementBuildNumber` only bumps when
 // `BUILD_BUMP` is set — `npm run build` sets it; `build:bundle` (used by the
 // test scripts) does not, so the suite never churns the version.
-incrementBuildNumber();
+//
+// The resolved version is baked into both bundles as a compile-time constant
+// (`__BUILD_VERSION__`) via esbuild's `define`. That guarantees the output
+// bytes change whenever the version changes, so a version bump always churns
+// the artifacts.
+const BUILD_VERSION = incrementBuildNumber();
 
 /**
  * Build the single-file Lambda artifact: dist/lambda-http-proxy.mjs
@@ -49,6 +54,9 @@ const esbuildPlugin = () =>
     minify: false,
     sourceMap: true,
     tsconfig: 'tsconfig.json',
+    // Bake the resolved package.json version into the bundle so a version bump
+    // always changes the output bytes.
+    define: { __BUILD_VERSION__: JSON.stringify(BUILD_VERSION) },
   });
 
 export default [

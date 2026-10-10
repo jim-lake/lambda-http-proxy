@@ -5,6 +5,14 @@ import type { IncomingHttpHeaders, IncomingMessage } from 'node:http';
 import { HttpResponse } from '@smithy/protocol-http';
 
 /*
+ * Compile-time constant injected by esbuild (`define` in rollup.config.mjs)
+ * from package.json's version. Exported so a version bump always changes the
+ * output bytes and the symbol survives tree-shaking.
+ */
+declare const __BUILD_VERSION__: string;
+export const BUILD_VERSION: string = __BUILD_VERSION__;
+
+/*
  * The subset of a signed SDK request we read. We keep this loose on purpose:
  * the SDK's HttpRequest shape is what flows in, and we only touch these fields.
  */
