@@ -2,6 +2,13 @@ import { builtinModules } from 'node:module';
 import { nodeResolve } from '@rollup/plugin-node-resolve';
 import esbuild from 'rollup-plugin-esbuild';
 import dts from 'rollup-plugin-dts';
+import { incrementBuildNumber } from './scripts/rollup-increment-build-number.mjs';
+
+// Bump package.json's version once at config load (before either bundle), so a
+// single bump covers the whole build. `incrementBuildNumber` only bumps when
+// `BUILD_BUMP` is set — `npm run build` sets it; `build:bundle` (used by the
+// test scripts) does not, so the suite never churns the version.
+incrementBuildNumber();
 
 /**
  * Build the single-file Lambda artifact: dist/lambda-http-proxy.mjs

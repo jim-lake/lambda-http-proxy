@@ -2,6 +2,17 @@
 
 Operational reference for working on **lambda-http-proxy**.
 
+## ⛔ NEVER decrement the version in package.json
+
+**NEVER decrement, revert, roll back, or "unbump" `version` in `package.json`
+FOR ANY REASON.** This includes — without exception — script testing, running
+the test suite, experiments, reverting a mistaken build, cleaning up, or any
+other situation. The version is monotonic: it only ever goes up.
+
+If a build bumped the version as a side effect of something, **leave it bumped.**
+Do not "restore" it. There is no scenario in which lowering the version is
+correct.
+
 ## Project
 
 A streaming HTTP proxy that runs on AWS Lambda. It forwards **SigV4-signed AWS

@@ -1,6 +1,6 @@
 {
   "name": "lambda-http-proxy",
-  "version": "1.0.0",
+  "version": "0.0.3",
   "description": "AWS Lambda HTTP proxy with response streaming that forwards SigV4-signed requests verbatim",
   "type": "module",
   "main": "dist/lambda-http-proxy.mjs",
@@ -26,7 +26,7 @@
     "lint": "eslint src --fix",
     "pretty": "prettier -u --write \"**/*\" --log-level warn",
     "build:bundle": "rollup -c rollup.config.mjs",
-    "build": "npm run ts:check && npm run build:bundle",
+    "build": "npm run ts:check && BUILD_BUMP=1 npm run build:bundle",
     "prepublishOnly": "npm run build",
     "test": "npm run build:bundle && tsx --test \"test/**/*.test.mjs\"",
     "test:only": "tsx --test \"test/**/*.test.mjs\"",
