@@ -80,18 +80,31 @@ for await (const event of res.body) {
 ### Constructing the handler
 
 ```js
-// Production: the HTTPS Function URL of your deployed proxy.
+// The HTTPS Function URL of your deployed proxy.
 new ProxyRequestHandler({
   proxyUrl: 'https://<id>.lambda-url.<region>.on.aws/',
 });
 
-// Local: a proxy running over plain HTTP.
-new ProxyRequestHandler({ proxyHost: '127.0.0.1', proxyPort: 3000 });
+// Optionally override the region used to sign the outer POST (defaults to the
+// region parsed from the Function URL host) and/or the credentials (defaults
+// to the AWS default provider chain).
+new ProxyRequestHandler({
+  proxyUrl: 'https://<id>.lambda-url.<region>.on.aws/',
+  region: 'us-west-2',
+  credentials: { accessKeyId: '…', secretAccessKey: '…' },
+});
 ```
 
-Because the Function URL uses `AWS_IAM` auth, the caller's identity needs
-`lambda:InvokeFunctionUrl` on the function. The inner request is still
-SigV4-signed for the target service.
+The handler **always SigV4-signs the outer POST** to the Function URL for the
+`lambda` service, so it authenticates against the URL's `AWS_IAM` auth out of
+the box. The caller's identity needs `lambda:InvokeFunctionUrl` on the function.
+This is independent of the inner request, which stays SigV4-signed for the
+target service (S3, Bedrock, …) inside the envelope.
+
+Because signing is built in, `ProxyRequestHandler` resolves `@smithy/signature-v4`,
+`@smithy/core` (for its SHA-256), and `@aws-sdk/credential-provider-node` at
+runtime. These ship with every AWS SDK v3 client, so a consumer that already
+uses the SDK has them; they are declared as optional peer dependencies.
 
 ## Deploy
 

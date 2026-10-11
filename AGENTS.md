@@ -31,8 +31,13 @@ rebuild with `npm run build`):
 - `src/lambda-outbound-proxy.ts` — the Lambda handler. Zero runtime deps beyond Node
   builtins. Built to `dist/lambda-outbound-proxy.mjs` (handler `lambda-outbound-proxy.handler`).
 - `src/proxy-request-handler.ts` — the SDK `requestHandler` consumers import.
-  Built to `dist/proxy-request-handler.mjs`; `@smithy/protocol-http` is a
-  peer/external dep, not bundled.
+  Built to `dist/proxy-request-handler.mjs`. It **always SigV4-signs the outer
+  POST** to the Function URL for the `lambda` service, so it authenticates
+  against the URL's `AWS_IAM` auth. Signing uses static top-level imports of
+  `@smithy/signature-v4`, `@smithy/core/checksum` (SHA-256), and
+  `@aws-sdk/credential-provider-node`; those plus `@smithy/protocol-http` stay
+  external (optional peer deps), not bundled — every AWS SDK v3 client ships
+  them. No dynamic `import()` in source (there is an eslint rule enforcing it).
 
 ## How the proxy works
 
@@ -149,11 +154,25 @@ headers, binary body integrity, and incremental delivery.
 
 ### 3. Real-AWS end-to-end tests — `test/smoke-{s3,bedrock}.test.ts`
 
-A real SDK client signs the request; `ProxyFunctionUrlRequestHandler` (exported
-from `test/function-url-runtime.ts`) wraps it in the proxy envelope and runs it
-through the same plain-node Function URL emulation, which forwards it verbatim
-to **real AWS over HTTPS** and streams the raw response back. No Docker, no SAM
-— just the ambient credentials on the box.
+A real SDK client signs the inner request; the **published**
+`ProxyRequestHandler` (constructed inline in each test, exactly as a consumer
+would) SigV4-signs the outer POST and sends it over real HTTP(S). The target is
+chosen by `test/proxy-target.ts` via `createTargetFixture()`, whose
+`before`/`after` hooks (plugged into node:test) manage the lifecycle:
+
+- **local** (default): `startLocalProxyServer()` (in `function-url-runtime.ts`)
+  stands up a real plain-http server that plays the RESPONSE_STREAM edge — it
+  runs the proxy through the Function URL emulation, strips `content-length` and
+  hop-by-hop headers (as the real edge does), and streams the raw body back.
+  `ProxyRequestHandler` talks to it over http; the signed outer POST is accepted
+  as-is (no IAM in front of a local socket). `before` brings the server up,
+  `after` tears it down (forcing keep-alive sockets shut so the suite exits).
+- **deployed**: `ProxyRequestHandler` points at the live Function URL over
+  https; `before`/`after` do nothing. The outer signature now authenticates
+  against real IAM.
+
+Either way the proxy forwards verbatim to **real AWS** and streams the raw
+response back. No Docker, no SAM — just the ambient credentials on the box.
 
 - `smoke-s3.test.ts`: ListBuckets + GetObject.
 - `smoke-bedrock.test.ts`: ListFoundationModels + `InvokeModelWithResponseStream`.
