@@ -95,9 +95,7 @@ test('Bedrock InvokeModelWithResponseStream streams raw event-stream through the
       'expected every stream event to carry a decoded chunk'
     );
     chunks += 1;
-    const decoded = JSON.parse(
-      Buffer.from(event.chunk.bytes).toString('utf8')
-    );
+    const decoded = JSON.parse(Buffer.from(event.chunk.bytes).toString('utf8'));
     const delta = decoded?.contentBlockDelta?.delta?.text;
     if (delta) {
       text += delta;
@@ -107,5 +105,8 @@ test('Bedrock InvokeModelWithResponseStream streams raw event-stream through the
   // The binary event-stream must have survived the proxy byte-for-byte and the
   // SDK must have decoded real events.
   assert.ok(chunks >= 1, 'expected at least one decoded stream event');
-  assert.ok(text.length > 0, 'expected non-empty generated text from the model');
+  assert.ok(
+    text.length > 0,
+    'expected non-empty generated text from the model'
+  );
 });

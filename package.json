@@ -1,15 +1,15 @@
 {
-  "name": "lambda-http-proxy",
+  "name": "lambda-outbound-proxy",
   "version": "0.0.11",
   "description": "AWS Lambda HTTP proxy with response streaming that forwards SigV4-signed requests verbatim",
   "type": "module",
-  "main": "dist/lambda-http-proxy.mjs",
-  "module": "dist/lambda-http-proxy.mjs",
-  "types": "dist/lambda-http-proxy.d.ts",
+  "main": "dist/lambda-outbound-proxy.mjs",
+  "module": "dist/lambda-outbound-proxy.mjs",
+  "types": "dist/lambda-outbound-proxy.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/lambda-http-proxy.d.ts",
-      "import": "./dist/lambda-http-proxy.mjs"
+      "types": "./dist/lambda-outbound-proxy.d.ts",
+      "import": "./dist/lambda-outbound-proxy.mjs"
     },
     "./proxy-request-handler.mjs": {
       "types": "./dist/proxy-request-handler.d.mts",
@@ -29,7 +29,6 @@
     "pretty": "prettier -u --write \"**/*\" --log-level warn",
     "build:bundle": "rollup -c rollup.config.mjs",
     "build": "npm run ts:check && BUILD_BUMP=1 npm run build:bundle",
-    "prepublishOnly": "npm run build",
     "test": "npm run build:bundle && tsx --test \"test/**/*.ts\"",
     "test:only": "tsx --test \"test/**/*.ts\"",
     "test:local": "PROXY_TARGET=local tsx --test \"test/*.test.ts\"",

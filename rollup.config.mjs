@@ -15,30 +15,11 @@ import { incrementBuildNumber } from './scripts/rollup-increment-build-number.mj
 // the artifacts.
 const BUILD_VERSION = incrementBuildNumber();
 
-/**
- * Build the single-file Lambda artifact: dist/lambda-http-proxy.mjs
- *
- * - esbuild transpiles TypeScript (fast). tsc is NEVER used to emit — only as a
- *   type-checker via `npm run ts:check`.
- * - A second pass with rollup-plugin-dts emits the bundled type declarations
- *   (dist/lambda-http-proxy.d.ts), also without tsc emit.
- * - Rollup bundles the ESM output into one file.
- * - The AWS SDK (and its @smithy/* internals) are marked EXTERNAL because the
- *   managed nodejs24.x runtime already ships them. Bundling them would bloat
- *   the artifact and risk version drift from what the runtime loads.
- *
- * Note: the proxy itself imports zero @aws-sdk/* modules at runtime (it uses
- * only Node builtins). These externals exist so that any future SDK use — or
- * transitively pulled SDK code — resolves to the runtime-provided copy rather
- * than being bundled.
- */
-
 const nodeBuiltins = new Set([
   ...builtinModules,
   ...builtinModules.map((m) => `node:${m}`),
 ]);
 
-/** Treat anything under these scopes as runtime-provided. */
 const RUNTIME_PROVIDED_SCOPES = ['@aws-sdk/', '@smithy/', 'aws-sdk'];
 
 function isExternal(id) {
@@ -54,20 +35,17 @@ const esbuildPlugin = () =>
     minify: false,
     sourceMap: true,
     tsconfig: 'tsconfig.json',
-    // Bake the resolved package.json version into the bundle so a version bump
-    // always changes the output bytes.
     define: { __BUILD_VERSION__: JSON.stringify(BUILD_VERSION) },
   });
 
 export default [
   {
-    input: 'src/lambda-http-proxy.ts',
+    input: 'src/lambda-outbound-proxy.ts',
     external: isExternal,
     output: {
-      file: 'dist/lambda-http-proxy.mjs',
+      file: 'dist/lambda-outbound-proxy.mjs',
       format: 'esm',
       sourcemap: true,
-      // Lambda handler is `lambda-http-proxy.handler`; keep the named export.
       exports: 'named',
     },
     plugins: [
@@ -76,27 +54,17 @@ export default [
     ],
   },
   {
-    input: 'src/lambda-http-proxy.ts',
+    input: 'src/lambda-outbound-proxy.ts',
     external: isExternal,
-    output: { file: 'dist/lambda-http-proxy.d.ts', format: 'es' },
+    output: { file: 'dist/lambda-outbound-proxy.d.ts', format: 'es' },
     plugins: [dts()],
   },
   {
-    /*
-     * Also emit `.d.mts`. The artifact is imported by its real `.mjs` path in
-     * the tests; under `moduleResolution: bundler`, tsc maps a `.mjs` specifier
-     * to `.d.mts` (not the sibling `.d.ts`), so this makes those imports typed.
-     */
-    input: 'src/lambda-http-proxy.ts',
+    input: 'src/lambda-outbound-proxy.ts',
     external: isExternal,
-    output: { file: 'dist/lambda-http-proxy.d.mts', format: 'es' },
+    output: { file: 'dist/lambda-outbound-proxy.d.mts', format: 'es' },
     plugins: [dts()],
   },
-  /*
-   * Secondary entry point: the SDK requestHandler. Published as
-   * `lambda-http-proxy/proxy-request-handler.mjs`. @smithy/* stays external
-   * (peer-provided), so this bundle is tiny.
-   */
   {
     input: 'src/proxy-request-handler.ts',
     external: isExternal,

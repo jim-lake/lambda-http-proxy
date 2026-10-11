@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Deploy lambda-http-proxy with the AWS CLI only.
+# Deploy lambda-outbound-proxy with the AWS CLI only.
 #
 # RESPONSE_STREAM is hard-coded as the ONLY invoke mode. The proxy streams
 # every byte of the upstream response and never buffers, so a buffered Function
@@ -11,10 +11,10 @@
 #
 set -euo pipefail
 
-FUNCTION_NAME="${FUNCTION_NAME:-lambda-http-proxy}"
+FUNCTION_NAME="${FUNCTION_NAME:-lambda-outbound-proxy}"
 REGION="${AWS_REGION:-us-east-1}"
 RUNTIME="nodejs24.x"
-HANDLER="lambda-http-proxy.handler"
+HANDLER="lambda-outbound-proxy.handler"
 INVOKE_MODE="RESPONSE_STREAM"   # <-- only supported mode
 ARCH="arm64"
 
@@ -26,14 +26,14 @@ fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-echo "==> Building artifact (dist/lambda-http-proxy.mjs)"
+echo "==> Building artifact (dist/lambda-outbound-proxy.mjs)"
 npm run build >/dev/null
 
 echo "==> Packaging"
 # The artifact is a single self-contained ESM file; the AWS SDK is provided by
 # the runtime (external). No node_modules are shipped.
 ZIP="$(mktemp -d)/function.zip"
-( cd dist && zip -q "$ZIP" lambda-http-proxy.mjs )
+( cd dist && zip -q "$ZIP" lambda-outbound-proxy.mjs )
 
 echo "==> Creating or updating function '$FUNCTION_NAME'"
 if aws lambda get-function --function-name "$FUNCTION_NAME" --region "$REGION" >/dev/null 2>&1; then

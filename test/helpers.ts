@@ -4,7 +4,7 @@ import { Buffer } from 'node:buffer';
 import { PassThrough } from 'node:stream';
 import type { Readable } from 'node:stream';
 import type { AddressInfo } from 'node:net';
-import type { ResponseMetadata } from '../dist/lambda-http-proxy.mjs';
+import type { ResponseMetadata } from '../dist/lambda-outbound-proxy.mjs';
 
 export interface Origin {
   server: http.Server;

@@ -31,7 +31,7 @@ jobs:
 
       - name: Checksum artifact
         working-directory: dist
-        run: sha256sum lambda-http-proxy.mjs > lambda-http-proxy.mjs.sha256
+        run: sha256sum lambda-outbound-proxy.mjs > lambda-outbound-proxy.mjs.sha256
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v3
@@ -39,5 +39,5 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}
           name: v${{ steps.version.outputs.version }}
           files: |
-            dist/lambda-http-proxy.mjs
-            dist/lambda-http-proxy.mjs.sha256
+            dist/lambda-outbound-proxy.mjs
+            dist/lambda-outbound-proxy.mjs.sha256

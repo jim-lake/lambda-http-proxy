@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Operational reference for working on **lambda-http-proxy**.
+Operational reference for working on **lambda-outbound-proxy**.
 
 ## ⛔ NEVER decrement the version in package.json
 
@@ -28,8 +28,8 @@ streams the response straight back through the SDK.
 Two published entry points, both TypeScript source built to `dist/` (gitignored;
 rebuild with `npm run build`):
 
-- `src/lambda-http-proxy.ts` — the Lambda handler. Zero runtime deps beyond Node
-  builtins. Built to `dist/lambda-http-proxy.mjs` (handler `lambda-http-proxy.handler`).
+- `src/lambda-outbound-proxy.ts` — the Lambda handler. Zero runtime deps beyond Node
+  builtins. Built to `dist/lambda-outbound-proxy.mjs` (handler `lambda-outbound-proxy.handler`).
 - `src/proxy-request-handler.ts` — the SDK `requestHandler` consumers import.
   Built to `dist/proxy-request-handler.mjs`; `@smithy/protocol-http` is a
   peer/external dep, not bundled.
@@ -48,7 +48,7 @@ rebuild with `npm run build`):
      (envelope size); the signed content-length rides inside the envelope
      headers and is forwarded to the upstream unchanged.
 3. The Lambda handler unwraps the envelope (`parseEvent` in
-   `src/lambda-http-proxy.ts`). If the body is a `__proxyEnvelope`, it uses
+   `src/lambda-outbound-proxy.ts`). If the body is a `__proxyEnvelope`, it uses
    `envelope.{path,method,headers,body}`; otherwise it falls back to the raw
    Function URL event.
 4. `buildUpstreamHeaders` forwards every signed header and strips only
@@ -168,21 +168,21 @@ request). A valid response — or a post-verification error like
 ## Deploy
 
 Streaming is the only supported mode: `InvokeMode: RESPONSE_STREAM`,
-`AuthType: AWS_IAM`, `nodejs24.x`, handler `lambda-http-proxy.handler`.
+`AuthType: AWS_IAM`, `nodejs24.x`, handler `lambda-outbound-proxy.handler`.
 
 ```bash
 ROLE_ARN=... AWS_REGION=... ./scripts/deploy.sh
 ```
 
 `scripts/deploy.sh` builds with the AWS CLI only, zips only
-`dist/lambda-http-proxy.mjs` (no node_modules — SDK is runtime-provided), and
+`dist/lambda-outbound-proxy.mjs` (no node_modules — SDK is runtime-provided), and
 configures the Function URL with `RESPONSE_STREAM`.
 
 ## Conventions
 
-- Keep `src/lambda-http-proxy.ts` a single comment-light file; it has no runtime
+- Keep `src/lambda-outbound-proxy.ts` a single comment-light file; it has no runtime
   deps beyond Node builtins. Anything SDK-related is dev/test only.
-- The published surface is `.` (the handler, `dist/lambda-http-proxy.mjs`) and
+- The published surface is `.` (the handler, `dist/lambda-outbound-proxy.mjs`) and
   `./proxy-request-handler.mjs` (`dist/proxy-request-handler.mjs`). Both are
   built from `src/`; `@smithy/*` stays external in the requestHandler bundle.
 - When touching header handling or path encoding, the Bedrock real-AWS test is

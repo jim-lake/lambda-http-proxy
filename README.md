@@ -1,4 +1,4 @@
-# lambda-http-proxy
+# lambda-outbound-proxy
 
 A streaming HTTP proxy that runs on AWS Lambda. It forwards **SigV4-signed AWS
 requests verbatim** to their real target and **streams the response back**, so
@@ -12,7 +12,7 @@ It deploys as a **Lambda Function URL in response-streaming mode**
 ## Install
 
 ```bash
-npm install lambda-http-proxy
+npm install lambda-outbound-proxy
 ```
 
 ## Usage
@@ -24,7 +24,7 @@ response streams straight back.
 
 ```js
 import { S3Client, ListBucketsCommand } from '@aws-sdk/client-s3';
-import { ProxyRequestHandler } from 'lambda-http-proxy/proxy-request-handler.mjs';
+import { ProxyRequestHandler } from 'lambda-outbound-proxy/proxy-request-handler.mjs';
 
 const s3 = new S3Client({
   region: 'us-east-1',
@@ -45,7 +45,7 @@ import {
   BedrockRuntimeClient,
   InvokeModelWithResponseStreamCommand,
 } from '@aws-sdk/client-bedrock-runtime';
-import { ProxyRequestHandler } from 'lambda-http-proxy/proxy-request-handler.mjs';
+import { ProxyRequestHandler } from 'lambda-outbound-proxy/proxy-request-handler.mjs';
 
 const bedrock = new BedrockRuntimeClient({
   region: 'us-east-1',

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { PassThrough } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { FunctionUrlEvent } from '../../dist/lambda-http-proxy.mjs';
+import type { FunctionUrlEvent } from '../../dist/lambda-outbound-proxy.mjs';
 import { startOrigin, captureStream } from '../helpers.ts';
 
 // Unit tests exercise proxy() directly against throwaway http origins. No
@@ -12,7 +12,7 @@ import { startOrigin, captureStream } from '../helpers.ts';
 // the raw upstream body. The full RESPONSE_STREAM output contract is covered by
 // test/unit/function-url.test.ts.
 process.env.PROXY_TARGET_SCHEME = 'http';
-const { proxy } = await import('../../dist/lambda-http-proxy.mjs');
+const { proxy } = await import('../../dist/lambda-outbound-proxy.mjs');
 
 interface SeenRequest {
   method?: string;

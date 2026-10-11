@@ -34,7 +34,7 @@ import type {
   LambdaContext,
   ResponseMetadata,
   ResponseStream,
-} from '../dist/lambda-http-proxy.mjs';
+} from '../dist/lambda-outbound-proxy.mjs';
 import { reassembleHeaders } from '../dist/proxy-request-handler.mjs';
 
 type ProxyHandler = (
@@ -125,7 +125,7 @@ export function installAwslambdaShim(): AwsLambdaGlobal {
  */
 export async function loadHandler(): Promise<ProxyHandler> {
   installAwslambdaShim();
-  const mod = await import('../dist/lambda-http-proxy.mjs');
+  const mod = await import('../dist/lambda-outbound-proxy.mjs');
   return mod.handler;
 }
 

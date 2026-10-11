@@ -231,4 +231,4 @@ const handler = streamify(
 );
 
 export { BUILD_VERSION, REMAP_PREFIX, handler, proxy };
-//# sourceMappingURL=lambda-http-proxy.mjs.map
+//# sourceMappingURL=lambda-outbound-proxy.mjs.map
