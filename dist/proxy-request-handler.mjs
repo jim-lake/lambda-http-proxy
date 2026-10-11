@@ -1,27 +1,40 @@
 import http from 'node:http';
 import https from 'node:https';
 import { Buffer } from 'node:buffer';
-import { HttpResponse } from '@smithy/protocol-http';
+import { HttpRequest, HttpResponse } from '@smithy/protocol-http';
+import { SignatureV4 } from '@smithy/signature-v4';
+import { Sha256 } from '@smithy/core/checksum';
+import { defaultProvider } from '@aws-sdk/credential-provider-node';
 
-const BUILD_VERSION = "0.0.12";
+const BUILD_VERSION = "0.0.13";
+function regionFromHost(host) {
+  const m = /\.lambda-url\.([^.]+)\.on\.aws$/.exec(host);
+  return m ? m[1] : "";
+}
 class ProxyRequestHandler {
   client;
   host;
   port;
   basePath;
-  constructor(opts = {}) {
-    if (opts.proxyUrl) {
-      const u = new URL(opts.proxyUrl);
-      this.client = u.protocol === "http:" ? http : https;
-      this.host = u.hostname;
-      this.port = u.port ? Number(u.port) : u.protocol === "http:" ? 80 : 443;
-      this.basePath = u.pathname.replace(/\/$/, "");
-    } else {
-      this.client = http;
-      this.host = opts.proxyHost ?? "127.0.0.1";
-      this.port = opts.proxyPort ?? 3e3;
-      this.basePath = "";
+  region;
+  signer;
+  constructor(opts) {
+    if (!opts.proxyUrl) {
+      throw new Error("ProxyRequestHandler requires a proxyUrl");
     }
+    const u = new URL(opts.proxyUrl);
+    this.client = u.protocol === "http:" ? http : https;
+    this.host = u.hostname;
+    this.port = u.port ? Number(u.port) : u.protocol === "http:" ? 80 : 443;
+    this.basePath = u.pathname.replace(/\/$/, "");
+    const parsedRegion = regionFromHost(this.host);
+    this.region = opts.region ?? (parsedRegion === "" ? "us-east-1" : parsedRegion);
+    this.signer = new SignatureV4({
+      service: "lambda",
+      region: this.region,
+      credentials: opts.credentials ?? defaultProvider(),
+      sha256: Sha256
+    });
   }
   async handle(request) {
     const signedPath = request.path + (request.query ? toQuery(request.query) : "");
@@ -35,17 +48,30 @@ class ProxyRequestHandler {
       bodyIsBase64: true
     };
     const envelopeBytes = Buffer.from(JSON.stringify(envelope), "utf8");
+    const outerPath = `${this.basePath}/`;
+    const protocol = this.client === http ? "http:" : "https:";
+    const toSign = new HttpRequest({
+      method: "POST",
+      protocol,
+      hostname: this.host,
+      port: this.port,
+      path: outerPath,
+      headers: {
+        host: this.host,
+        "content-type": "application/json",
+        "content-length": String(Buffer.byteLength(envelopeBytes))
+      },
+      body: envelopeBytes
+    });
+    const signed = await this.signer.sign(toSign);
     return new Promise((resolve, reject) => {
       const proxyReq = this.client.request(
         {
           host: this.host,
           port: this.port,
           method: "POST",
-          path: `${this.basePath}/`,
-          headers: {
-            "content-type": "application/json",
-            "content-length": Buffer.byteLength(envelopeBytes)
-          }
+          path: outerPath,
+          headers: signed.headers
         },
         (proxyRes) => {
           resolve({

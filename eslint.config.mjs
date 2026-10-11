@@ -28,6 +28,19 @@ export default tseslint.config(
     rules: {
       'import/no-unresolved': 'off',
       'function-paren-newline': 'off',
+      /*
+       * No dynamic `import()` / `await import()` in source. Everything the
+       * published entry points need (incl. the SigV4 signer) is a static
+       * top-level import; the AWS SDK family stays external in the bundle.
+       */
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'ImportExpression',
+          message:
+            'Do not use dynamic import() / await import(). Use a static top-level import.',
+        },
+      ],
       '@typescript-eslint/no-misused-spread': ['error', { allow: ['Error'] }],
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-unsafe-assignment': 'error',

@@ -2,7 +2,11 @@ import http from 'node:http';
 import https from 'node:https';
 import { Buffer } from 'node:buffer';
 import type { IncomingHttpHeaders, IncomingMessage } from 'node:http';
-import { HttpResponse } from '@smithy/protocol-http';
+import { HttpRequest, HttpResponse } from '@smithy/protocol-http';
+import { SignatureV4 } from '@smithy/signature-v4';
+import { Sha256 } from '@smithy/core/checksum';
+import { defaultProvider } from '@aws-sdk/credential-provider-node';
+import type { AwsCredentialIdentity, Provider } from '@smithy/types';
 
 /*
  * Compile-time constant injected by esbuild (`define` in rollup.config.mjs)
@@ -25,12 +29,34 @@ interface SignedRequest {
 }
 
 export interface ProxyRequestHandlerOptions {
-  /** Production: the HTTPS Function URL of the deployed proxy. */
-  proxyUrl?: string;
-  /** Local testing: proxy host over plain HTTP (default 127.0.0.1). */
-  proxyHost?: string;
-  /** Local testing: proxy port over plain HTTP (default 3000). */
-  proxyPort?: number;
+  /**
+   * The Function URL of the deployed proxy. Required. For local testing this
+   * can be a plain-http URL (e.g. `http://127.0.0.1:3000/`); the outer POST is
+   * SigV4-signed either way.
+   */
+  proxyUrl: string;
+  /**
+   * Region used to SigV4-sign the OUTER POST for the `lambda` service.
+   * Defaults to the region parsed from the Function URL host. When the host is
+   * not a Function URL (e.g. localhost) it falls back to `us-east-1` — the
+   * value is irrelevant for a local proxy that does not verify the signature.
+   */
+  region?: string;
+  /**
+   * Credentials used to sign the OUTER POST. Defaults to the AWS default
+   * credential provider chain.
+   */
+  credentials?: AwsCredentialIdentity | Provider<AwsCredentialIdentity>;
+}
+
+/*
+ * Parse "<id>.lambda-url.<region>.on.aws" -> region. Returns '' when the host
+ * is not a Function URL (e.g. a local http proxy), in which case the caller
+ * falls back to an arbitrary region — it is irrelevant for a local proxy.
+ */
+function regionFromHost(host: string): string {
+  const m = /\.lambda-url\.([^.]+)\.on\.aws$/.exec(host);
+  return m ? m[1] : '';
 }
 
 /**
@@ -38,34 +64,53 @@ export interface ProxyRequestHandlerOptions {
  * request through the Lambda HTTP proxy instead of directly to the signed host.
  *
  * It wraps the entire signed request (path, method, headers, body) in a JSON
- * envelope and POSTs it to the proxy. The proxy unwraps it and forwards the
- * signed request verbatim to the real host, so SigV4 verification at the
- * upstream passes unchanged. Works for any SigV4 service — S3, Bedrock,
- * DynamoDB, etc. — because it never interprets the payload.
+ * envelope and POSTs it to the proxy. The OUTER POST is ALWAYS SigV4-signed for
+ * the `lambda` service so it authenticates against the Function URL's
+ * `AuthType: AWS_IAM`. The proxy unwraps the envelope and forwards the signed
+ * request verbatim to the real host, so SigV4 verification at the upstream
+ * passes unchanged. Works for any SigV4 service — S3, Bedrock, DynamoDB, etc. —
+ * because it never interprets the payload.
  *
- * Construct with either:
- *   { proxyUrl: 'https://<id>.lambda-url.<region>.on.aws/' }   (production)
- *   { proxyHost: '127.0.0.1', proxyPort: 3000 }                 (local http)
+ * Two independent SigV4 signatures are in play, and they must not be confused:
+ *   - INNER: the SDK already signed the request for its target service. That
+ *     signature rides inside the envelope untouched.
+ *   - OUTER: this handler signs the POST to the Function URL for service
+ *     `lambda` in the URL's region, so the Function URL's IAM auth accepts it.
+ *
+ * Construct with just the URL:
+ *   new ProxyRequestHandler({ proxyUrl: 'https://<id>.lambda-url.<region>.on.aws/' })
  */
 export class ProxyRequestHandler {
   private readonly client: typeof http | typeof https;
   private readonly host: string;
   private readonly port: number;
   private readonly basePath: string;
+  private readonly region: string;
+  private readonly signer: SignatureV4;
 
-  constructor(opts: ProxyRequestHandlerOptions = {}) {
-    if (opts.proxyUrl) {
-      const u = new URL(opts.proxyUrl);
-      this.client = u.protocol === 'http:' ? http : https;
-      this.host = u.hostname;
-      this.port = u.port ? Number(u.port) : u.protocol === 'http:' ? 80 : 443;
-      this.basePath = u.pathname.replace(/\/$/, '');
-    } else {
-      this.client = http;
-      this.host = opts.proxyHost ?? '127.0.0.1';
-      this.port = opts.proxyPort ?? 3000;
-      this.basePath = '';
+  constructor(opts: ProxyRequestHandlerOptions) {
+    if (!opts.proxyUrl) {
+      throw new Error('ProxyRequestHandler requires a proxyUrl');
     }
+    const u = new URL(opts.proxyUrl);
+    this.client = u.protocol === 'http:' ? http : https;
+    this.host = u.hostname;
+    this.port = u.port ? Number(u.port) : u.protocol === 'http:' ? 80 : 443;
+    this.basePath = u.pathname.replace(/\/$/, '');
+    /*
+     * Region to sign the outer POST. Prefer an explicit option, then the
+     * Function URL host, then an arbitrary default — the value is irrelevant
+     * for a local proxy that does not verify the signature.
+     */
+    const parsedRegion = regionFromHost(this.host);
+    this.region =
+      opts.region ?? (parsedRegion === '' ? 'us-east-1' : parsedRegion);
+    this.signer = new SignatureV4({
+      service: 'lambda',
+      region: this.region,
+      credentials: opts.credentials ?? defaultProvider(),
+      sha256: Sha256,
+    });
   }
 
   async handle(request: SignedRequest): Promise<{ response: HttpResponse }> {
@@ -91,17 +136,37 @@ export class ProxyRequestHandler {
     };
     const envelopeBytes = Buffer.from(JSON.stringify(envelope), 'utf8');
 
+    /*
+     * basePath has any trailing slash stripped in the constructor, so this is
+     * always a valid absolute path ("/" when basePath is empty).
+     */
+    const outerPath = `${this.basePath}/`;
+    const protocol = this.client === http ? 'http:' : 'https:';
+
+    // Build the OUTER POST and SigV4-sign it for the Function URL's IAM auth.
+    const toSign = new HttpRequest({
+      method: 'POST',
+      protocol,
+      hostname: this.host,
+      port: this.port,
+      path: outerPath,
+      headers: {
+        host: this.host,
+        'content-type': 'application/json',
+        'content-length': String(Buffer.byteLength(envelopeBytes)),
+      },
+      body: envelopeBytes,
+    });
+    const signed = await this.signer.sign(toSign);
+
     return new Promise((resolve, reject) => {
       const proxyReq = this.client.request(
         {
           host: this.host,
           port: this.port,
           method: 'POST',
-          path: `${this.basePath}/`,
-          headers: {
-            'content-type': 'application/json',
-            'content-length': Buffer.byteLength(envelopeBytes),
-          },
+          path: outerPath,
+          headers: signed.headers,
         },
         (proxyRes: IncomingMessage) => {
           resolve({

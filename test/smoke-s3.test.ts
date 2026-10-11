@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   S3Client,
@@ -8,14 +8,16 @@ import {
   HeadObjectCommand,
   GetObjectCommand,
 } from '@aws-sdk/client-s3';
-import { makeProxyRequestHandler } from './proxy-target.ts';
+import type { S3ClientConfig } from '@aws-sdk/client-s3';
+import { ProxyRequestHandler } from '../dist/proxy-request-handler.mjs';
+import { createTargetFixture } from './proxy-target.ts';
 
 /*
  * End-to-end proof against REAL AWS, read-only. A real S3Client signs each
- * request; ProxyFunctionUrlRequestHandler wraps it in the proxy envelope and
- * runs it through the proxy (the plain-node Function URL RESPONSE_STREAM
- * emulation), which forwards it verbatim to real S3 over HTTPS and streams the
- * raw response back.
+ * request; the published ProxyRequestHandler SigV4-signs the outer POST and
+ * runs it through the proxy (locally, the plain-node Function URL
+ * RESPONSE_STREAM emulation), which forwards it verbatim to real S3 over HTTPS
+ * and streams the raw response back.
  *
  * The flow is self-seeding and region-agnostic: each read discovers the input
  * for the next — ListBuckets -> GetBucketLocation -> ListObjectsV2 ->
@@ -32,8 +34,15 @@ import { makeProxyRequestHandler } from './proxy-target.ts';
  */
 const MAX_READ_BYTES = 10 * 1024 * 1024; // 10 MB cap
 
-function s3For(region: string): S3Client {
-  return new S3Client({ region, requestHandler: makeProxyRequestHandler() });
+const fixture = createTargetFixture();
+before(() => fixture.before());
+after(() => fixture.after());
+
+function s3For(
+  region: string,
+  requestHandler: S3ClientConfig['requestHandler']
+): S3Client {
+  return new S3Client({ region, requestHandler });
 }
 
 /* Read a GetObject body stream, enforcing the 10 MB cap without buffering it all. */
@@ -55,10 +64,16 @@ async function readCapped(
 }
 
 test('S3 read-only chain survives the proxy hop (real AWS)', async () => {
+  // Inline, exactly as a consumer would: point ProxyRequestHandler at the URL.
+  const requestHandler = new ProxyRequestHandler({
+    proxyUrl: fixture.proxyUrl,
+    region: fixture.region,
+  });
+
   // ListBuckets is a global call; a client for the aws-global region needs no
   // regional assumption. us-east-1 here is just the global S3 endpoint, not a
   // guess about where the data lives.
-  const global = s3For('us-east-1');
+  const global = s3For('us-east-1', requestHandler);
 
   // 1. ListBuckets — must return 200 and at least one bucket to drive the chain.
   const listed = await global.send(new ListBucketsCommand({}));
@@ -78,7 +93,7 @@ test('S3 read-only chain survives the proxy hop (real AWS)', async () => {
     new GetBucketLocationCommand({ Bucket: bucket })
   );
   const region = loc.LocationConstraint ?? 'us-east-1';
-  const s3 = s3For(region);
+  const s3 = s3For(region, requestHandler);
 
   // 3. ListObjectsV2 — there must be a non-empty object to read.
   const objects = await s3.send(

@@ -8,8 +8,9 @@ import {
   invokeFunctionUrl,
   collect,
   makeEnvelopeEvent,
-  ProxyFunctionUrlRequestHandler,
+  startLocalProxyServer,
 } from '../function-url-runtime.ts';
+import { ProxyRequestHandler } from '../../dist/proxy-request-handler.mjs';
 
 /*
  * These tests drive the proxy through the plain-node Function URL emulator
@@ -183,9 +184,10 @@ test('empty-body response (HEAD) still conveys status and headers', async () => 
 });
 
 test('SDK requestHandler reassembles the real HEAD headers and empties the body', async () => {
-  // The companion to the test above: through the full SDK requestHandler, the
-  // smuggled headers are restored to their canonical names, so the caller sees
-  // the response exactly as the upstream sent it, with an empty body.
+  // The companion to the test above: through the published ProxyRequestHandler
+  // (which ALWAYS SigV4-signs the outer POST), the smuggled headers are
+  // restored to their canonical names, so the caller sees the response exactly
+  // as the upstream sent it, with an empty body.
   const { server, port } = await startOrigin(
     (_req: IncomingMessage, res: ServerResponse) => {
       res.writeHead(200, {
@@ -197,7 +199,8 @@ test('SDK requestHandler reassembles the real HEAD headers and empties the body'
     }
   );
 
-  const handler = new ProxyFunctionUrlRequestHandler();
+  const local = await startLocalProxyServer();
+  const handler = new ProxyRequestHandler({ proxyUrl: local.url });
   const { response } = (await handler.handle({
     method: 'HEAD',
     path: '/some/object',
@@ -211,6 +214,7 @@ test('SDK requestHandler reassembles the real HEAD headers and empties the body'
   };
   const received = await collect(response.body);
   server.close();
+  await local.close();
 
   assert.equal(response.statusCode, 200);
   // Canonical names restored — HeadObject's ContentLength would populate.

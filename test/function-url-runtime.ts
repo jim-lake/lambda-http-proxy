@@ -26,8 +26,8 @@
  */
 import { PassThrough, Readable } from 'node:stream';
 import { Buffer } from 'node:buffer';
-import https from 'node:https';
-import type { IncomingMessage } from 'node:http';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import type {
   AwsLambdaGlobal,
   FunctionUrlEvent,
@@ -35,7 +35,6 @@ import type {
   ResponseMetadata,
   ResponseStream,
 } from '../dist/lambda-outbound-proxy.mjs';
-import { reassembleHeaders } from '../dist/proxy-request-handler.mjs';
 
 type ProxyHandler = (
   event: FunctionUrlEvent,
@@ -269,269 +268,98 @@ export function makeEnvelopeEvent({
   };
 }
 
-/*
- * The subset of a signed SDK request we read. We keep this loose on purpose:
- * the SDK's HttpRequest shape is what flows in, and we only touch these fields.
- */
-interface SignedRequest {
-  method: string;
-  path: string;
-  query?: Record<string, string | string[] | null | undefined>;
-  headers: Record<string, string>;
-  body?: unknown;
+export interface LocalProxyServer {
+  server: http.Server;
+  url: string;
+  close: () => Promise<void>;
 }
 
 /*
- * An AWS SDK v3 `requestHandler` that routes an already-signed request through
- * the proxy running in this plain-node Function URL emulation, then on to real
- * AWS. The SDK signs the request; this handler wraps it in the proxy envelope,
- * invokes the proxy handler via `invokeFunctionUrl` (which forwards the signed
- * request verbatim to the real host over HTTPS and streams the raw response
- * back), and returns the response to the SDK.
+ * Stand up a REAL local HTTP server that behaves like a deployed Function URL
+ * in RESPONSE_STREAM mode — but over plain http. It receives the outer POST
+ * (SigV4-signed by ProxyRequestHandler; the signature is accepted as-is since
+ * there is no IAM in front of a local socket), reads the JSON envelope, runs
+ * the proxy handler through `invokeFunctionUrl`, and — exactly as the AWS edge
+ * does — strips the metadata prelude and writes the raw upstream status,
+ * headers, and body back to the caller.
  *
- * This is the end-to-end proof that SigV4 survives the proxy hop: a
- * SignatureDoesNotMatch means the proxy mangled the request; a valid response
- * (or a post-verification error like AccessDenied/NoSuchKey) means it survived.
- * Because the body is streamed back raw, binary event-stream responses
- * (Bedrock) arrive intact — there is no buffering emulator in the path.
+ * The published `ProxyRequestHandler` then talks to this server over http the
+ * same way it talks to a deployed Function URL over https. One code path, both
+ * targets.
  */
-export class ProxyFunctionUrlRequestHandler {
-  private handler?: ProxyHandler;
+export async function startLocalProxyServer(): Promise<LocalProxyServer> {
+  const handler = await loadHandler();
 
-  constructor({ handler }: { handler?: ProxyHandler } = {}) {
-    this.handler = handler;
-  }
+  const server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => chunks.push(c));
+    req.on('end', () => {
+      void (async () => {
+        try {
+          const raw = Buffer.concat(chunks).toString('utf8');
+          const event: FunctionUrlEvent = {
+            version: '2.0',
+            rawPath: '/',
+            rawQueryString: '',
+            headers: { 'content-type': 'application/json' },
+            requestContext: { http: { method: 'POST', path: '/' } },
+            body: raw,
+            isBase64Encoded: false,
+          };
 
-  async handle(request: SignedRequest): Promise<{ response: unknown }> {
-    const { HttpResponse } = await import('@smithy/protocol-http');
-    this.handler ??= await loadHandler();
-
-    const signedPath =
-      request.path + (request.query ? toQuery(request.query) : '');
-    const signedBody = await collectBody(request.body);
-
-    const event = makeEnvelopeEvent({
-      path: signedPath,
-      method: request.method,
-      headers: { ...request.headers },
-      body: signedBody,
-    });
-
-    const { statusCode, headers, body } = await invokeFunctionUrl(event, {
-      handler: this.handler,
-    });
-
-    // Reassemble the true upstream headers from the proxy's side channel —
-    // exactly as the published ProxyRequestHandler does. The body is already
-    // genuinely empty for body-less responses (the proxy flushes the prelude
-    // with a zero-length write, not a sentinel byte).
-    return {
-      response: new HttpResponse({
-        statusCode,
-        headers: reassembleHeaders(headers),
-        body,
-      }),
-    };
-  }
-}
-
-interface AwsCredentialsLike {
-  accessKeyId: string;
-  secretAccessKey: string;
-  sessionToken?: string;
-}
-
-interface HttpsHandlerOptions {
-  functionUrl?: string;
-  region?: string;
-  service?: string;
-  credentials?: AwsCredentialsLike | (() => Promise<AwsCredentialsLike>);
-}
-
-/*
- * An AWS SDK v3 `requestHandler` that routes an already-signed request through
- * a LIVE deployed Function URL (RESPONSE_STREAM, AuthType: AWS_IAM) over real
- * HTTPS — the same code path as the published ProxyRequestHandler, but with the
- * outer POST SigV4-signed so it authenticates against the IAM-protected URL.
- *
- * Two independent SigV4 signatures are in play, and they must not be confused:
- *   - INNER: the SDK already signed the request for its target service (S3,
- *     Bedrock, …). That signature rides inside the envelope untouched.
- *   - OUTER: this handler signs the POST to the Function URL for service
- *     `lambda` in the URL's region, so the Function URL's IAM auth accepts it.
- *
- * The deployed Function URL in RESPONSE_STREAM mode has the AWS edge strip the
- * metadata prelude, so the HTTPS response body we receive is already the raw
- * upstream body (byte-for-byte) — we hand it straight to the SDK as a stream.
- */
-export class ProxyFunctionUrlHttpsRequestHandler {
-  private readonly host: string;
-  private readonly port: number;
-  private readonly basePath: string;
-  private readonly region?: string;
-  private readonly service: string;
-  private readonly credentials?: HttpsHandlerOptions['credentials'];
-  private signer: unknown = null;
-
-  constructor({
-    functionUrl,
-    region,
-    service = 'lambda',
-    credentials,
-  }: HttpsHandlerOptions = {}) {
-    if (!functionUrl) {
-      throw new Error('ProxyFunctionUrlHttpsRequestHandler needs functionUrl');
-    }
-    const u = new URL(functionUrl);
-    this.host = u.hostname;
-    this.port = u.port ? Number(u.port) : 443;
-    this.basePath = u.pathname.replace(/\/$/, '');
-    this.region = region;
-    this.service = service;
-    this.credentials = credentials;
-  }
-
-  async #getSigner(): Promise<{
-    sign: (req: unknown) => Promise<{ headers: Record<string, string> }>;
-  }> {
-    if (this.signer) {
-      return this.signer as {
-        sign: (req: unknown) => Promise<{ headers: Record<string, string> }>;
-      };
-    }
-    const { SignatureV4 } = await import('@smithy/signature-v4');
-    const { createHash, createHmac } = await import('node:crypto');
-    // Minimal HashConstructor backed by Node crypto (no @aws-crypto dep).
-    class Sha256 {
-      private readonly hash: ReturnType<typeof createHmac | typeof createHash>;
-
-      constructor(secret?: string | Uint8Array) {
-        this.hash = secret
-          ? createHmac('sha256', secret)
-          : createHash('sha256');
-      }
-
-      update(data: string | Uint8Array): void {
-        this.hash.update(data);
-      }
-
-      digest(): Promise<Uint8Array> {
-        return Promise.resolve(new Uint8Array(this.hash.digest()));
-      }
-    }
-    let credentials = this.credentials;
-    if (!credentials) {
-      const { defaultProvider } =
-        await import('@aws-sdk/credential-provider-node');
-      credentials = defaultProvider();
-    }
-    this.signer = new SignatureV4({
-      service: this.service,
-      region: this.region!,
-      credentials: credentials,
-      sha256: Sha256 as never,
-    });
-    return this.signer as {
-      sign: (req: unknown) => Promise<{ headers: Record<string, string> }>;
-    };
-  }
-
-  async handle(request: SignedRequest): Promise<{ response: unknown }> {
-    const { HttpRequest, HttpResponse } = await import('@smithy/protocol-http');
-
-    const signedPath =
-      request.path + (request.query ? toQuery(request.query) : '');
-    const signedBody = await collectBody(request.body);
-
-    const envelope = {
-      __proxyEnvelope: true,
-      path: signedPath,
-      method: request.method,
-      headers: { ...request.headers },
-      body: signedBody ? Buffer.from(signedBody).toString('base64') : undefined,
-      bodyIsBase64: true,
-    };
-    const envelopeBytes = Buffer.from(JSON.stringify(envelope), 'utf8');
-
-    // Build the OUTER POST and SigV4-sign it for the Function URL's IAM auth.
-    // basePath has any trailing slash stripped in the constructor, so this is
-    // always a valid absolute path ("/" when basePath is empty).
-    const outerPath = `${this.basePath}/`;
-    const toSign = new HttpRequest({
-      method: 'POST',
-      protocol: 'https:',
-      hostname: this.host,
-      port: this.port,
-      path: outerPath,
-      headers: {
-        host: this.host,
-        'content-type': 'application/json',
-        'content-length': String(Buffer.byteLength(envelopeBytes)),
-      },
-      body: envelopeBytes,
-    });
-
-    const signer = await this.#getSigner();
-    const signed = await signer.sign(toSign);
-
-    return new Promise((resolve, reject) => {
-      const req = https.request(
-        {
-          host: this.host,
-          port: this.port,
-          method: 'POST',
-          path: outerPath,
-          headers: signed.headers,
-        },
-        (res: IncomingMessage) => {
-          resolve({
-            response: new HttpResponse({
-              statusCode: res.statusCode ?? 200,
-              headers: reassembleHeaders(flattenHeaders(res.headers)),
-              body: res,
-            }),
+          const { statusCode, headers, body } = await invokeFunctionUrl(event, {
+            handler,
           });
+          /*
+           * Emulate the real RESPONSE_STREAM edge: it does NOT echo a
+           * `content-length` for a streamed body (that is exactly why the proxy
+           * smuggles the true value under `x-lambda-proxy-remap-content-length`).
+           * Let Node frame the response itself; forwarding a stale
+           * content-length here would make the HTTP client wait for bytes that
+           * never come and reset the socket. Hop-by-hop headers are dropped too.
+           */
+          const edgeHeaders: Record<string, string> = {};
+          for (const [k, v] of Object.entries(headers)) {
+            const lower = k.toLowerCase();
+            if (
+              lower === 'content-length' ||
+              lower === 'connection' ||
+              lower === 'transfer-encoding' ||
+              lower === 'keep-alive'
+            ) {
+              continue;
+            }
+            edgeHeaders[k] = v;
+          }
+          res.writeHead(statusCode, edgeHeaders);
+          body.pipe(res);
+          body.on('error', () => res.destroy());
+        } catch (e) {
+          res.statusCode = 502;
+          res.end(e instanceof Error ? e.message : String(e));
         }
-      );
-      req.on('error', reject);
-      req.write(envelopeBytes);
-      req.end();
+      })();
     });
-  }
-}
+  });
 
-function toQuery(
-  query: Record<string, string | string[] | null | undefined>
-): string {
-  const parts: string[] = [];
-  for (const [k, v] of Object.entries(query)) {
-    if (v == null) {
-      parts.push(encodeURIComponent(k));
-    } else if (Array.isArray(v)) {
-      for (const item of v) {
-        parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(item)}`);
-      }
-    } else {
-      parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
-    }
-  }
-  return parts.length ? `?${parts.join('&')}` : '';
-}
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  // Don't keep the test process alive for an idle local proxy socket.
+  server.unref();
+  const { port } = server.address() as AddressInfo;
 
-async function collectBody(
-  body: unknown
-): Promise<string | Buffer | undefined> {
-  if (!body) {
-    return undefined;
-  }
-  if (typeof body === 'string' || Buffer.isBuffer(body)) {
-    return body;
-  }
-  const chunks: Buffer[] = [];
-  for await (const c of body as AsyncIterable<Buffer>) {
-    chunks.push(c);
-  }
-  return Buffer.concat(chunks);
+  return {
+    server,
+    url: `http://127.0.0.1:${port}/`,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        // Keep-alive sockets from the handler's http agent would otherwise keep
+        // server.close()'s callback pending forever. Force them shut.
+        server.closeAllConnections();
+        server.close((err) => (err ? reject(err) : resolve()));
+      }),
+  };
 }
 
 export { Readable };

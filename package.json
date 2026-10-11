@@ -1,6 +1,6 @@
 {
   "name": "lambda-outbound-proxy",
-  "version": "0.0.12",
+  "version": "0.0.13",
   "description": "AWS Lambda HTTP proxy with response streaming that forwards SigV4-signed requests verbatim",
   "type": "module",
   "main": "dist/lambda-outbound-proxy.mjs",
@@ -47,10 +47,22 @@
     "providedSdkVersion": "3.1105.0"
   },
   "peerDependencies": {
-    "@smithy/protocol-http": ">=4"
+    "@aws-sdk/credential-provider-node": ">=3",
+    "@smithy/core": ">=2",
+    "@smithy/protocol-http": ">=4",
+    "@smithy/signature-v4": ">=4"
   },
   "peerDependenciesMeta": {
+    "@aws-sdk/credential-provider-node": {
+      "optional": true
+    },
+    "@smithy/core": {
+      "optional": true
+    },
     "@smithy/protocol-http": {
+      "optional": true
+    },
+    "@smithy/signature-v4": {
       "optional": true
     }
   },
@@ -58,10 +70,13 @@
     "@aws-sdk/client-bedrock": "3.1105.0",
     "@aws-sdk/client-bedrock-runtime": "3.1105.0",
     "@aws-sdk/client-s3": "3.1105.0",
+    "@aws-sdk/credential-provider-node": "3.972.84",
     "@eslint/js": "9.39.5",
     "@rollup/plugin-node-resolve": "16.0.3",
+    "@smithy/core": "3.35.2",
     "@smithy/node-http-handler": "4.12.1",
     "@smithy/protocol-http": "5.6.2",
+    "@smithy/signature-v4": "5.7.4",
     "@smithy/types": "4.19.0",
     "@types/node": "26.6.5",
     "esbuild": "0.28.2",

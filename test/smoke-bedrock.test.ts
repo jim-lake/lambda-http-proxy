@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import {
@@ -9,7 +9,8 @@ import {
   BedrockRuntimeClient,
   InvokeModelWithResponseStreamCommand,
 } from '@aws-sdk/client-bedrock-runtime';
-import { makeProxyRequestHandler } from './proxy-target.ts';
+import { ProxyRequestHandler } from '../dist/proxy-request-handler.mjs';
+import { createTargetFixture } from './proxy-target.ts';
 
 /*
  * End-to-end proof for Bedrock against REAL AWS, through the proxy running in
@@ -33,10 +34,17 @@ import { makeProxyRequestHandler } from './proxy-target.ts';
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const MODEL_ID = process.env.MODEL_ID || 'us.amazon.nova-2-lite-v1:0';
 
+const fixture = createTargetFixture();
+before(() => fixture.before());
+after(() => fixture.after());
+
 test('Bedrock ListFoundationModels survives the proxy hop (real AWS)', async () => {
   const control = new BedrockClient({
     region: REGION,
-    requestHandler: makeProxyRequestHandler(),
+    requestHandler: new ProxyRequestHandler({
+      proxyUrl: fixture.proxyUrl,
+      region: fixture.region,
+    }),
   });
 
   // Any error here (including a protocol/parse error from a non-Bedrock body)
@@ -61,7 +69,10 @@ test('Bedrock ListFoundationModels survives the proxy hop (real AWS)', async () 
 test('Bedrock InvokeModelWithResponseStream streams raw event-stream through the proxy (real AWS)', async () => {
   const runtime = new BedrockRuntimeClient({
     region: REGION,
-    requestHandler: makeProxyRequestHandler(),
+    requestHandler: new ProxyRequestHandler({
+      proxyUrl: fixture.proxyUrl,
+      region: fixture.region,
+    }),
   });
   const payload = {
     messages: [

@@ -31,8 +31,12 @@ test('wraps the signed request in an envelope and POSTs it to the proxy', async 
   );
 
   const handler = new ProxyRequestHandler({
-    proxyHost: '127.0.0.1',
-    proxyPort: port,
+    proxyUrl: `http://127.0.0.1:${port}/`,
+    region: 'us-east-1',
+    credentials: {
+      accessKeyId: 'AKIDEXAMPLE',
+      secretAccessKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+    },
   });
 
   const signedHeaders = {

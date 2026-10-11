@@ -1,21 +1,21 @@
 /*
  * Shared test target selector.
  *
- * The smoke tests (test/smoke-*.test.mjs) are written ONCE and run against
- * either of two targets, chosen entirely by environment:
+ * Every smoke test uses the SAME published `ProxyRequestHandler` from
+ * `dist/proxy-request-handler.mjs`. The handler ALWAYS SigV4-signs the outer
+ * POST for the `lambda` service — there is no separate "signing" path in the
+ * tests. The only thing that changes between targets is the URL the handler
+ * points at:
  *
- *   - local  (default): the proxy runs IN-PROCESS via the plain-node Function
- *     URL RESPONSE_STREAM emulation in function-url-runtime.mjs. No network to
- *     a deployed function; the proxy still forwards verbatim to real AWS.
+ *   - local  (default): an in-process plain-http server (startLocalProxyServer)
+ *     runs the proxy via the Function URL RESPONSE_STREAM emulation and
+ *     forwards verbatim to real AWS. ProxyRequestHandler talks to it over http.
+ *     The signed outer POST is accepted as-is (no IAM in front of a local
+ *     socket), so signing is exercised but not enforced.
  *
- *   - deployed: the proxy is a LIVE deployed Function URL. The outer POST that
- *     carries the envelope is SigV4-signed for the `lambda` service (the URL is
- *     AuthType: AWS_IAM) and sent over real HTTPS. The function then forwards
- *     the inner signed request verbatim to real AWS and streams the response
- *     back.
- *
- * Both targets expose the identical SDK `requestHandler` contract, so the test
- * files never change — they just call makeProxyRequestHandler().
+ *   - deployed: ProxyRequestHandler points at a LIVE deployed Function URL
+ *     (AuthType: AWS_IAM) over https. The same signed outer POST now
+ *     authenticates against real IAM.
  *
  * Selection:
  *   PROXY_TARGET=local                       -> in-process emulation (default)
@@ -28,8 +28,8 @@
  * Setting PROXY_FUNCTION_URL alone implies the deployed target.
  */
 import {
-  ProxyFunctionUrlRequestHandler,
-  ProxyFunctionUrlHttpsRequestHandler,
+  startLocalProxyServer,
+  type LocalProxyServer,
 } from './function-url-runtime.ts';
 
 export function resolveTarget() {
@@ -70,18 +70,57 @@ export function resolveTarget() {
 }
 
 /*
- * Build the SDK requestHandler for the resolved target. Shared by every smoke
- * test so one *.test.mjs runs against local OR deployed unchanged.
+ * Target lifecycle for the smoke tests. The tests themselves construct
+ * `new ProxyRequestHandler({ proxyUrl })` INLINE — exactly as a real consumer
+ * would — so they double as usage examples. This fixture only supplies the URL
+ * (and, for deployed, the signing region) and manages the local server:
+ *
+ *   `fixture.before` / `fixture.after` plug straight into node:test's
+ *   `before`/`after`. In LOCAL mode `before` brings up the in-process proxy
+ *   server and `after` tears it down. In DEPLOYED mode both do essentially
+ *   nothing. After `before` has run, read `fixture.proxyUrl` (and
+ *   `fixture.region`) to build the handler.
  */
-export function makeProxyRequestHandler() {
+export interface TargetFixture {
+  before: () => Promise<void>;
+  after: () => Promise<void>;
+  /** The URL to pass to `new ProxyRequestHandler({ proxyUrl })`. */
+  readonly proxyUrl: string;
+  /** Region for the outer signature; only set for deployed. */
+  readonly region: string | undefined;
+}
+
+export function createTargetFixture(): TargetFixture {
   const t = resolveTarget();
+
   if (t.target === 'deployed') {
-    return new ProxyFunctionUrlHttpsRequestHandler({
-      functionUrl: t.functionUrl,
+    return {
+      before: () => Promise.resolve(),
+      after: () => Promise.resolve(),
+      proxyUrl: t.functionUrl!,
       region: t.region,
-    });
+    };
   }
-  return new ProxyFunctionUrlRequestHandler();
+
+  let local: LocalProxyServer | undefined;
+  return {
+    before: async () => {
+      local = await startLocalProxyServer();
+    },
+    after: async () => {
+      await local?.close();
+      local = undefined;
+    },
+    get proxyUrl(): string {
+      if (!local) {
+        throw new Error(
+          'local proxy server not started — call fixture.before() first'
+        );
+      }
+      return local.url;
+    },
+    region: undefined,
+  };
 }
 
 /* Human-readable description of where the tests are pointed (for logs). */
