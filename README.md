@@ -9,6 +9,34 @@ response** — same status, same headers, same body bytes, never buffered.
 It deploys as a **Lambda Function URL in response-streaming mode**
 (`InvokeMode: RESPONSE_STREAM`, `AuthType: AWS_IAM`).
 
+## The Lambda signs nothing and runs with NO privileges
+
+**This is the single most important thing to understand about the proxy.**
+
+- **The Lambda DOES NOT sign anything.** It has no AWS SDK, imports no SigV4
+  code, and makes no signed calls. It receives the caller's **already-signed**
+  request and forwards those exact bytes to the upstream verbatim. All signing
+  happens on the **client** side (the SDK signs the inner request; the included
+  `ProxyRequestHandler` signs the outer POST). The Lambda is a dumb pipe.
+- **The Lambda runs with NO privileges.** Its execution role needs **zero** AWS
+  permissions — no S3, no Bedrock, no access to any upstream service, nothing
+  beyond basic Lambda execution (writing its own CloudWatch Logs). It never
+  calls any AWS service _as itself_, so it never needs permission to. Give it an
+  empty/minimal execution role. **Never** attach upstream-service permissions to
+  it.
+
+Because the Lambda holds no credentials and signs nothing, it can never act as a
+confused deputy. The upstream only ever sees requests the **caller** signed with
+the **caller's** identity. The two signatures in play are:
+
+1. **Inner request** — signed by the caller's SDK for the target service (S3,
+   Bedrock, …). The Lambda relays it untouched.
+2. **Outer POST to the Function URL** — signed by `ProxyRequestHandler` for the
+   `lambda` service. IAM on the URL (`AuthType: AWS_IAM`) verifies this before
+   the handler ever runs, and it is the **only** thing gating who may use the
+   proxy. Deploying with `AuthType: NONE` removes that gate and turns the proxy
+   into an open relay — don't.
+
 ## Install
 
 ```bash
@@ -117,6 +145,12 @@ ROLE_ARN=arn:aws:iam::<account>:role/<lambda-exec-role> \
 AWS_REGION=us-east-1 \
 ./scripts/deploy.sh
 ```
+
+`ROLE_ARN` is just the Lambda **execution** role, and it should have **NO
+privileges** beyond basic Lambda execution (CloudWatch Logs). Do **not** grant
+it S3, Bedrock, or any upstream-service permissions — the Lambda signs nothing
+and never calls any service as itself, so it needs none. `AWS_IAM` on the
+Function URL is the only access control; keep it.
 
 ## License
 
