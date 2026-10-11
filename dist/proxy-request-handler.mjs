@@ -3,7 +3,7 @@ import https from 'node:https';
 import { Buffer } from 'node:buffer';
 import { HttpResponse } from '@smithy/protocol-http';
 
-const BUILD_VERSION = "0.0.11";
+const BUILD_VERSION = "0.0.12";
 class ProxyRequestHandler {
   client;
   host;

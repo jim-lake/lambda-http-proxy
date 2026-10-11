@@ -1,6 +1,6 @@
 {
   "name": "lambda-outbound-proxy",
-  "version": "0.0.11",
+  "version": "0.0.12",
   "description": "AWS Lambda HTTP proxy with response streaming that forwards SigV4-signed requests verbatim",
   "type": "module",
   "main": "dist/lambda-outbound-proxy.mjs",
@@ -32,8 +32,7 @@
     "test": "npm run build:bundle && tsx --test \"test/**/*.ts\"",
     "test:only": "tsx --test \"test/**/*.ts\"",
     "test:local": "PROXY_TARGET=local tsx --test \"test/*.test.ts\"",
-    "test:deployed": "PROXY_TARGET=deployed node --env-file=.env --import tsx --test \"test/*.test.ts\"",
-    "probe:sdk-version": "echo 'Deploy a probe to your target region to read the exact runtime SDK version; see lambdaRuntime.sdkVersionProbe'"
+    "test:deployed": "PROXY_TARGET=deployed node --env-file=.env --import tsx --test \"test/*.test.ts\""
   },
   "keywords": [
     "aws",
@@ -45,8 +44,6 @@
   "license": "MIT",
   "lambdaRuntime": {
     "runtime": "nodejs24.x",
-    "comment": "The @aws-sdk/* and @smithy/* packages are provided by the managed runtime and are marked external in rollup.config.mjs. AWS documents the included SDK version as runtime- AND region-specific; the authoritative source is the deployed runtime itself. Pinned per operator confirmation.",
-    "sdkVersionProbe": "Deploy a function with: export const handler = async () => ({ version: (await import('@aws-sdk/client-s3/package.json', { with: { type: 'json' } })).default.version }); then invoke it in your target region to confirm.",
     "providedSdkVersion": "3.1105.0"
   },
   "peerDependencies": {
