@@ -152,7 +152,7 @@ async function collectBody(body) {
   return Buffer.concat(chunks);
 }
 
-const BUILD_VERSION = "0.0.13";
+const BUILD_VERSION = "0.0.14";
 const NULL_BODY_STATUS = /* @__PURE__ */ new Set([101, 204, 205, 304]);
 class FetchProxy {
   handler;

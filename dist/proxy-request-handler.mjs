@@ -6,7 +6,7 @@ import { SignatureV4 } from '@smithy/signature-v4';
 import { Sha256 } from '@smithy/core/checksum';
 import { defaultProvider } from '@aws-sdk/credential-provider-node';
 
-const BUILD_VERSION = "0.0.13";
+const BUILD_VERSION = "0.0.14";
 function regionFromHost(host) {
   const m = /\.lambda-url\.([^.]+)\.on\.aws$/.exec(host);
   return m ? m[1] : "";
