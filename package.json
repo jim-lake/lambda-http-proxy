@@ -14,6 +14,10 @@
     "./proxy-request-handler.mjs": {
       "types": "./dist/proxy-request-handler.d.mts",
       "import": "./dist/proxy-request-handler.mjs"
+    },
+    "./fetch-proxy.js": {
+      "types": "./dist/fetch-proxy.d.ts",
+      "import": "./dist/fetch-proxy.js"
     }
   },
   "files": [
@@ -29,10 +33,10 @@
     "pretty": "prettier -u --write \"**/*\" --log-level warn",
     "build:bundle": "rollup -c rollup.config.mjs",
     "build": "npm run ts:check && BUILD_BUMP=1 npm run build:bundle",
-    "test": "npm run build:bundle && tsx --test \"test/**/*.ts\"",
-    "test:only": "tsx --test \"test/**/*.ts\"",
-    "test:local": "PROXY_TARGET=local tsx --test \"test/*.test.ts\"",
-    "test:deployed": "PROXY_TARGET=deployed node --env-file=.env --import tsx --test \"test/*.test.ts\""
+    "test": "npm run build:bundle && npm run test:deployed && npm run test:unit",
+    "test:deployed": "node --env-file=.env --import tsx --test \"test/*.test.ts\"",
+    "test:unit": "tsx --test \"test/unit/**/*.test.ts\"",
+    "test:local": "PROXY_TARGET=local node --env-file=.env --import tsx --test \"test/*.test.ts\""
   },
   "keywords": [
     "aws",

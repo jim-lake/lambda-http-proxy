@@ -91,4 +91,30 @@ export default [
     output: { file: 'dist/proxy-request-handler.d.mts', format: 'es' },
     plugins: [dts()],
   },
+  {
+    input: 'src/fetch-proxy.ts',
+    external: isExternal,
+    output: {
+      file: 'dist/fetch-proxy.js',
+      format: 'esm',
+      sourcemap: true,
+      exports: 'named',
+    },
+    plugins: [
+      nodeResolve({ exportConditions: ['node'], preferBuiltins: true }),
+      esbuildPlugin(),
+    ],
+  },
+  {
+    input: 'src/fetch-proxy.ts',
+    external: isExternal,
+    output: { file: 'dist/fetch-proxy.d.ts', format: 'es' },
+    plugins: [dts()],
+  },
+  {
+    input: 'src/fetch-proxy.ts',
+    external: isExternal,
+    output: { file: 'dist/fetch-proxy.d.mts', format: 'es' },
+    plugins: [dts()],
+  },
 ];

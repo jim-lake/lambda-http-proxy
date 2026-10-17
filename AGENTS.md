@@ -13,6 +13,24 @@ If a build bumped the version as a side effect of something, **leave it bumped.*
 Do not "restore" it. There is no scenario in which lowering the version is
 correct.
 
+## ⛔ Comments: only non-obvious single-liners
+
+**No file-header comments, no function/JSDoc comments, no multi-line block
+comments, no narrative.** Comments must never restate what the code already
+says. The ONLY comment allowed is a single short line explaining something
+genuinely **non-obvious** (a surprising workaround, a spec quirk, a required
+`eslint-disable`). If the code is self-explanatory, write no comment. Behavioral
+instructions and design rationale belong **here in AGENTS.md**, not in source.
+
+## ⛔ Dependencies: always add the LATEST version — never from memory
+
+When adding a dependency to `package.json`, **look up the current latest version
+and pin that exact version.** Do NOT guess, and do NOT rely on your memory of
+version numbers — your memory is stale. Check the real latest (e.g.
+`npm view <pkg> version`) and use it. The one exception is anything that must
+mirror the runtime SDK: dev deps that shadow the managed runtime SDK stay pinned
+to `package.json#lambdaRuntime.providedSdkVersion` (see Toolchain), not "latest".
+
 ## Project
 
 A streaming HTTP proxy that runs on AWS Lambda. It forwards **SigV4-signed AWS
@@ -61,6 +79,14 @@ rebuild with `npm run build`):
   `@aws-sdk/credential-provider-node`; those plus `@smithy/protocol-http` stay
   external (optional peer deps), not bundled — every AWS SDK v3 client ships
   them. No dynamic `import()` in source (there is an eslint rule enforcing it).
+- `src/fetch-proxy.ts` — a drop-in WHATWG `fetch` for `fetch`-based SDKs (e.g.
+  the `openai` SDK's Bedrock provider). Exports the `FetchProxy` class
+  (`new FetchProxy({ proxyUrl, region?, credentials? })` with a bound `.fetch`).
+  Built to `dist/fetch-proxy.js` (+ `.d.ts`/`.d.mts`). It is a thin transport
+  wrapper over `ProxyRequestHandler`: the inner (already-signed) request rides
+  through the envelope untouched, the outer POST is SigV4-signed for `lambda`,
+  and the streamed response is adapted to a WHATWG `Response` with a
+  `ReadableStream` body. Same external deps as the requestHandler.
 
 ## How the proxy works
 
@@ -119,41 +145,44 @@ npm run ts:check     # tsc --noEmit (type-check only)
 npm run lint         # eslint src test --fix  (strict)
 npm run pretty       # prettier --write across the repo
 npm run build        # ts:check + rollup (esbuild bundle + dts) -> dist/
-npm test             # build, then run ALL tests (incl. real AWS)
-npm run test:only    # just the tests, no rebuild
+npm test             # build, then test:deployed + test:unit (deployed is the default)
+npm run test:deployed  # real-AWS smoke tests against the LIVE Function URL (.env)
+npm run test:unit      # in-process adapter/output-contract tests, no deployed URL
+npm run test:local     # dev-only: run the smoke suite against the in-process emulation
 ```
 
 Pinned to resolve peer ranges: `typescript@6.0.3` (fits typescript-eslint's
 `<6.1.0`), `eslint@9`. Keep `src/**/*.ts` and `test/**/*.ts` lint-clean.
 
-## The gate (run EVERY time; all four must be green)
-
-Four separate commands, all green at the end of every change:
+## The gate (run EVERY time; all must be green)
 
 ```bash
 npm run ts:check       # tsc --noEmit
 npm run lint           # eslint src test --fix (strict)
-npm test               # build + tsx --test "test/**/*.test.ts" (incl. real AWS)
-npm run test:deployed  # smoke tests against the LIVE deployed Function URL
+npm test               # build + test:deployed (real LIVE Function URL) + test:unit
 ```
 
-`npm test` runs the artifact bundle then every test file, **including the
-real-AWS S3 and Bedrock end-to-end tests** (via the in-process plain-node
-Function URL emulation). `npm run test:deployed` runs the same smoke tests
-against the **live deployed Function URL** named in `.env`
-(`LAMBDA_FUNCTION_URL`) — the outer envelope POST is SigV4-signed for `lambda`
-and sent over real HTTPS, exercising the full deployed path including IAM auth.
-The box always has valid AWS credentials; **nothing needs Docker, SAM, RIE, or
-LocalStack**. Do not add skips or gating for the real-AWS tests. If any of the
-four commands is not green, the change is not done.
+**Deployed is the default and primary target.** `npm test` builds the bundle,
+then runs `test:deployed` — the real-AWS smoke suite against the **live deployed
+Function URL** named in `.env` (`LAMBDA_FUNCTION_URL`), with the outer envelope
+POST SigV4-signed for `lambda` over real HTTPS, exercising the full deployed
+path including IAM auth — followed by `test:unit`, the fast in-process adapter
+and output-contract checks. `PROXY_TARGET` defaults to `deployed`; `local` is an
+explicit opt-in (`npm run test:local`) used ONLY while developing the Lambda
+handler against the in-process plain-node emulation. The box always has valid
+AWS credentials; **nothing needs Docker, SAM, RIE, or LocalStack**. Do not add
+skips or gating for the real-AWS tests. If any command is not green, the change
+is not done.
 
 ## Tests
 
-Three layers, all under `npm test`. Test files are `test/**/*.test.ts`; shared
-non-test helpers (e.g. the Function URL runtime emulator) live beside them as
-plain `.ts` and are imported, not run directly.
+Two groups. **Deployed smoke tests** are `test/*.test.ts` (run by
+`test:deployed` against the live Function URL). **In-process unit tests** are
+`test/unit/**/*.test.ts` (run by `test:unit`, no deployed URL). Shared non-test
+helpers (e.g. the Function URL runtime emulator) live beside them as plain `.ts`
+and are imported, not run directly.
 
-### 1. Unit tests — `test/unit/proxy.test.ts` + `test/unit/proxy-request-handler.test.ts` (no network)
+### Unit: proxy internals — `test/unit/proxy.test.ts` + `test/unit/proxy-request-handler.test.ts` (no network)
 
 `proxy.test.ts` exercises `proxy()` directly against throwaway local http
 origins. No Lambda runtime involved (the non-runtime fallback emits the
@@ -165,7 +194,7 @@ path/headers/body. `proxy-request-handler.test.ts` exercises the built
 envelope to a throwaway local proxy and asserts the envelope shape and the
 surfaced response.
 
-### 2. Output-contract tests — `test/unit/function-url.test.ts` (no network)
+### Unit: output contract — `test/unit/function-url.test.ts` (no network)
 
 Drive the proxy through `test/function-url-runtime.ts`, a **plain-node**
 emulation of a Function URL in `RESPONSE_STREAM` mode. It installs a faithful
@@ -175,35 +204,35 @@ strips the prelude and returns `{ statusCode, headers, body }` where `body` is a
 Readable. Assert the output is **indistinguishable from the upstream**: status,
 headers, binary body integrity, and incremental delivery.
 
-### 3. Real-AWS end-to-end tests — `test/smoke-{s3,bedrock}.test.ts`
+### Unit: fetch adapter — `test/unit/fetch-proxy.test.ts` (no network)
 
-A real SDK client signs the inner request; the **published**
-`ProxyRequestHandler` (constructed inline in each test, exactly as a consumer
-would) SigV4-signs the outer POST and sends it over real HTTP(S). The target is
-chosen by `test/proxy-target.ts` via `createTargetFixture()`, whose
-`before`/`after` hooks (plugged into node:test) manage the lifecycle:
+Drives the built `dist/fetch-proxy.js` `FetchProxy` through the in-process
+emulation against a throwaway origin. Covers the WHATWG contract the adapter
+owns and a deployed black box can't show: status/header mapping, byte-for-byte
+inner-header fidelity, streaming `ReadableStream` body, `redirect: 'manual'`
+(no following), null-body (HEAD/204/304), `Request`-object input, and
+`AbortSignal`.
 
-- **local** (default): `startLocalProxyServer()` (in `function-url-runtime.ts`)
-  stands up a real plain-http server that plays the RESPONSE_STREAM edge — it
-  runs the proxy through the Function URL emulation, strips `content-length` and
-  hop-by-hop headers (as the real edge does), and streams the raw body back.
-  `ProxyRequestHandler` talks to it over http; the signed outer POST is accepted
-  as-is (no IAM in front of a local socket). `before` brings the server up,
-  `after` tears it down (forcing keep-alive sockets shut so the suite exits).
-- **deployed**: `ProxyRequestHandler` points at the live Function URL over
-  https; `before`/`after` do nothing. The outer signature now authenticates
-  against real IAM.
+### Deployed smoke — `test/smoke-{s3,bedrock,fetch,unsigned}.test.ts`
 
-Either way the proxy forwards verbatim to **real AWS** and streams the raw
-response back. No Docker, no SAM — just the ambient credentials on the box.
+The target is chosen by `test/proxy-target.ts` via `createTargetFixture()` /
+`resolveTarget()`. **`deployed` is the default**; `local` (the in-process
+emulation that still forwards to real AWS) is an explicit opt-in for Lambda
+development only. Either way the proxy forwards verbatim to **real AWS** and
+streams the raw response back.
 
-- `smoke-s3.test.ts`: ListBuckets + GetObject.
-- `smoke-bedrock.test.ts`: ListFoundationModels + `InvokeModelWithResponseStream`.
-  Because the body streams back raw, the binary
-  `application/vnd.amazon.eventstream` response is decoded by the SDK intact —
-  this validates true streaming with no buffering emulator in the path.
+- `smoke-s3.test.ts` / `smoke-bedrock.test.ts`: a real SDK client signs the
+  inner request; the published `ProxyRequestHandler` (inline, as a consumer
+  would) signs the outer POST. S3: ListBuckets + GetObject. Bedrock:
+  ListFoundationModels + `InvokeModelWithResponseStream` (binary
+  `application/vnd.amazon.eventstream` decoded intact — true streaming).
+- `smoke-fetch.test.ts`: the published `FetchProxy` with a manually SigV4-signed
+  inner request to real S3 and Bedrock, incl. a streaming event-stream read.
+- `smoke-unsigned.test.ts`: **deployed-only** security guard — a bare unsigned
+  POST to the Function URL must be rejected `403` by IAM. It is NOT registered
+  in local mode (no IAM in front of a local socket), so it never skips.
 
-A `SignatureDoesNotMatch` is the only hard failure (the proxy mangled the
+A `SignatureDoesNotMatch`/`403` is the only hard failure (the proxy mangled the
 request). A valid response — or a post-verification error like
 `AccessDenied`/`NoSuchKey`/`ValidationException` — means signing survived.
 
@@ -228,11 +257,14 @@ is the only access control; never deploy with `AuthType: NONE`.
 
 ## Conventions
 
-- Keep `src/lambda-outbound-proxy.ts` a single comment-light file; it has no runtime
-  deps beyond Node builtins. Anything SDK-related is dev/test only.
-- The published surface is `.` (the handler, `dist/lambda-outbound-proxy.mjs`) and
-  `./proxy-request-handler.mjs` (`dist/proxy-request-handler.mjs`). Both are
-  built from `src/`; `@smithy/*` stays external in the requestHandler bundle.
+- Keep `src/lambda-outbound-proxy.ts` free of runtime deps beyond Node builtins.
+  Anything SDK-related is dev/test only. (Comment style is governed by the
+  comment rule near the top of this file.)
+- The published surface is `.` (the handler, `dist/lambda-outbound-proxy.mjs`),
+  `./proxy-request-handler.mjs` (`dist/proxy-request-handler.mjs`), and
+  `./fetch-proxy.js` (`dist/fetch-proxy.js`). All are built from `src/`;
+  `@smithy/*` / `@aws-sdk/*` stay external in the requestHandler and fetch
+  bundles.
 - When touching header handling or path encoding, the Bedrock real-AWS test is
   the sensitive case (double-encoded path, signed `x-amzn-bedrock-*`). It runs
   as part of `npm test`.
